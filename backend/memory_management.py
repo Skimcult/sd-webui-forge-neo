@@ -1310,7 +1310,12 @@ def soft_empty_cache(force=False):
     if cpu_state is CPUState.MPS:
         torch.mps.empty_cache()
     elif is_intel_xpu():
-        torch.xpu.empty_cache()
+        try:
+            torch.xpu.empty_cache()
+        except RuntimeError as exc:
+            # Ignore device-lost on cache flush to avoid cascading failures; XPU may recover on next op.
+            if "UR_RESULT_ERROR_DEVICE_LOST" not in str(exc):
+                raise
     elif torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
