@@ -765,70 +765,36 @@ class Api:
         try:
             import torch
 
-            try:
-                if torch.cuda.is_available():
-                    cuda_device = shared.device if getattr(shared.device, "type", None) == "cuda" else torch.device("cuda")
-                    s = torch.cuda.mem_get_info(cuda_device)
-                    system = {"free": s[0], "used": s[1] - s[0], "total": s[1]}
-                    s = dict(torch.cuda.memory_stats(cuda_device))
-                    allocated = {"current": s["allocated_bytes.all.current"], "peak": s["allocated_bytes.all.peak"]}
-                    reserved = {"current": s["reserved_bytes.all.current"], "peak": s["reserved_bytes.all.peak"]}
-                    active = {"current": s["active_bytes.all.current"], "peak": s["active_bytes.all.peak"]}
-                    inactive = {"current": s["inactive_split_bytes.all.current"], "peak": s["inactive_split_bytes.all.peak"]}
-                    warnings = {"retries": s["num_alloc_retries"], "oom": s["num_ooms"]}
-                    cuda = {
-                        "system": system,
-                        "active": active,
-                        "allocated": allocated,
-                        "reserved": reserved,
-                        "inactive": inactive,
-                        "events": warnings,
-                    }
-                else:
-                    cuda = {"error": "unavailable"}
-            except Exception as err:
-                cuda = {"error": f"{err}"}
+            if torch.cuda.is_available():
+                _backend = torch.cuda
+            elif torch.xpu.is_available():
+                _backend = torch.xpu
+            else:
+                _backend = None
 
-            try:
-                if hasattr(torch, "xpu") and torch.xpu.is_available():
-                    xpu_device = shared.device if getattr(shared.device, "type", None) == "xpu" else torch.device("xpu")
-                    stats = dict(torch.xpu.memory_stats(xpu_device))
-                    total = torch.xpu.get_device_properties(xpu_device).total_memory
-                    free = total - stats.get("active_bytes.all.current", 0)
-                    system = {"free": free, "used": total - free, "total": total}
-                    allocated = {
-                        "current": stats.get("allocated_bytes.all.current", 0),
-                        "peak": stats.get("allocated_bytes.all.peak", 0),
-                    }
-                    reserved = {
-                        "current": stats.get("reserved_bytes.all.current", 0),
-                        "peak": stats.get("reserved_bytes.all.peak", 0),
-                    }
-                    active = {
-                        "current": stats.get("active_bytes.all.current", 0),
-                        "peak": stats.get("active_bytes.all.peak", 0),
-                    }
-                    inactive = {
-                        "current": stats.get("inactive_split_bytes.all.current", 0),
-                        "peak": stats.get("inactive_split_bytes.all.peak", 0),
-                    }
-                    warnings = {"retries": stats.get("num_alloc_retries", 0), "oom": stats.get("num_ooms", 0)}
-                    xpu = {
-                        "system": system,
-                        "active": active,
-                        "allocated": allocated,
-                        "reserved": reserved,
-                        "inactive": inactive,
-                        "events": warnings,
-                    }
-                else:
-                    xpu = {"error": "unavailable"}
-            except Exception as err:
-                xpu = {"error": f"{err}"}
+            if _backend is not None:
+                s = _backend.mem_get_info()
+                system = {"free": s[0], "used": s[1] - s[0], "total": s[1]}
+                s = dict(_backend.memory_stats(shared.device))
+                allocated = {"current": s["allocated_bytes.all.current"], "peak": s["allocated_bytes.all.peak"]}
+                reserved = {"current": s["reserved_bytes.all.current"], "peak": s["reserved_bytes.all.peak"]}
+                active = {"current": s.get("active_bytes.all.current") or s.get("active.all.current") or 0, "peak": s.get("active_bytes.all.peak") or s.get("active.all.peak") or 0}
+                inactive = {"current": s["inactive_split_bytes.all.current"], "peak": s["inactive_split_bytes.all.peak"]}
+                warnings = {"retries": s["num_alloc_retries"], "oom": s["num_ooms"]}
+                cuda = {
+                    "device": str(shared.device),
+                    "system": system,
+                    "active": active,
+                    "allocated": allocated,
+                    "reserved": reserved,
+                    "inactive": inactive,
+                    "events": warnings,
+                }
+            else:
+                cuda = {"error": "unavailable"}
         except Exception as err:
             cuda = {"error": f"{err}"}
-            xpu = {"error": f"{err}"}
-        return models.MemoryResponse(ram=ram, cuda=cuda, xpu=xpu)
+        return models.MemoryResponse(ram=ram, cuda=cuda)
 
     def get_extensions_list(self):
         from modules import extensions

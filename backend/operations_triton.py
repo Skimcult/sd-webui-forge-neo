@@ -392,24 +392,7 @@ def triton_int8_linear_per_row(x: torch.Tensor, weight: torch.Tensor, weight_sca
     has_bias = bias is not None
     bias_ptr = bias if has_bias else x  # Dummy pointer if None
 
-    _int8_matmul_dequant_per_row_kernel[grid](
-        a_ptr=x_int8,
-        b_ptr=weight,
-        c_ptr=output,
-        a_scale_ptr=x_scale,
-        b_scale_ptr=ws,
-        bias_ptr=bias_ptr,
-        M=M,
-        N=N,
-        K=K,
-        stride_am=x_int8.stride(0),
-        stride_ak=x_int8.stride(1),
-        stride_bk=weight.stride(1),
-        stride_bn=weight.stride(0),
-        stride_cm=output.stride(0),
-        stride_cn=output.stride(1),
-        HAS_BIAS=has_bias,
-    )
+    _int8_matmul_dequant_per_row_kernel[grid](a_ptr=x_int8, b_ptr=weight, c_ptr=output, a_scale_ptr=x_scale, b_scale_ptr=ws, bias_ptr=bias_ptr, M=M, N=N, K=K, stride_am=x_int8.stride(0), stride_ak=x_int8.stride(1), stride_bk=weight.stride(1), stride_bn=weight.stride(0), stride_cm=output.stride(0), stride_cn=output.stride(1), HAS_BIAS=has_bias)
 
     # 6. Reshape output
     return output.reshape(x_shape_orig[:-1] + (N,))

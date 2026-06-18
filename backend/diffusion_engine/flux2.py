@@ -14,6 +14,7 @@ from backend.patcher.clip import CLIP
 from backend.patcher.unet import UnetPatcher
 from backend.patcher.vae import VAE
 from backend.text_processing.klein_engine import KleinTextProcessingEngine
+from modules.shared import opts
 
 
 class Flux2(ForgeDiffusionEngine):
@@ -21,7 +22,6 @@ class Flux2(ForgeDiffusionEngine):
 
     def __init__(self, estimated_config, huggingface_components):
         super().__init__(estimated_config, huggingface_components)
-        self.is_inpaint = False
 
         clip = CLIP(model_dict={"qwen3": huggingface_components["text_encoder"]}, tokenizer_dict={"qwen3": huggingface_components["tokenizer"]})
 
@@ -49,7 +49,7 @@ class Flux2(ForgeDiffusionEngine):
             if self.ini_latent is not None:
                 _references.insert(0, self.ini_latent)
                 self.ini_latent = None
-            dynamic_args["ref_latents"] = _references.copy()
+            dynamic_args.ref_latents = _references.copy()
 
         return self.text_processing_engine_gemma(prompt)
 
@@ -63,7 +63,10 @@ class Flux2(ForgeDiffusionEngine):
         sample = self.forge_objects.vae.encode(x.movedim(1, -1) * 0.5 + 0.5)
         sample = self.forge_objects.vae.first_stage_model.process_in(sample)
 
-        if dynamic_args["is_referencing"]:
+        if opts.klein_no_reference:
+            return sample.to(x)
+
+        if dynamic_args.is_referencing:
             self.ref_latents.append(sample.cpu())
         else:
             self.ini_latent = sample.cpu()

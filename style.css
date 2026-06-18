@@ -346,6 +346,10 @@ input[type="checkbox"].input-accordion-checkbox {
     object-fit: scale-down !important;
 }
 
+#txt2img_player video, #img2img_player video {
+    max-height: 60vh;
+}
+
 #txt2img_actions_column,
 #img2img_actions_column {
     gap: 0.5em;
@@ -1275,7 +1279,8 @@ footer {
 }
 
 .popup-dialog {
-    width: 56em;
+    width: 60vw;
+    height: auto;
     background: var(--body-background-fill) !important;
     padding: 2em !important;
 }
@@ -1810,11 +1815,28 @@ body.resizing .resize-handle {
     margin: auto 2em;
 }
 
-#txt2img_prompt_container.prompt-container-scroll,
-#img2img_prompt_container.prompt-container-scroll {
-    display: flex;
-    flex-direction: row;
-    overflow: auto;
-    height: 185px;
-    padding: 1em;
+#txt2img_prompt_container.prompt-container-scroll div.gradio-textbox.prompt,
+#img2img_prompt_container.prompt-container-scroll div.gradio-textbox.prompt {
+    height: 6em;
+    overflow-y: auto !important;
+}
+
+div.xyz_entries {
+    margin-bottom: var(--spacing-lg);
+}
+
+div.xyz_entries .gradio-textbox span, div.xyz_entries .gradio-dropdown.multiselect span {
+    margin-bottom: var(--spacing-lg);
+}
+
+div.xyz_entries button.secondary {
+    margin-left: var(--spacing-lg);
+}
+
+#swap_axes {
+    margin-top: var(--spacing-lg);
+}
+
+#swap_axes button {
+    border-radius: 8px;
 }

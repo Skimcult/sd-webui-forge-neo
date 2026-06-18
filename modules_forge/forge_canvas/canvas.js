@@ -30,6 +30,8 @@ class GradioTextAreaBind {
     }
 }
 
+const HISTORY_LIMIT = 16;
+
 class ForgeCanvas {
     constructor(
         uuid,
@@ -46,8 +48,6 @@ class ForgeCanvas {
         scribbleAlphaFixed = false,
         scribbleSoftness = 0,
         scribbleSoftnessFixed = false,
-        foregroundAsMain = false,
-        resizePersistKey = "",
     ) {
         this.gradio_config = gradio_config;
         this.uuid = uuid;
@@ -78,8 +78,6 @@ class ForgeCanvas {
         this.scribbleAlphaFixed = scribbleAlphaFixed;
         this.scribbleSoftness = scribbleSoftness;
         this.scribbleSoftnessFixed = scribbleSoftnessFixed;
-        this.foregroundAsMain = foregroundAsMain;
-        this.resizePersistKey = resizePersistKey;
 
         this.history = [];
         this.historyIndex = -1;
@@ -94,11 +92,11 @@ class ForgeCanvas {
         this.foreground_gradio_bind = new GradioTextAreaBind(this.uuid, "logical_image_foreground");
         this.init();
 
+        this._held_W = false;
         this._held_A = false;
         this._held_S = false;
 
         this._original_alpha = null;
-        this._eraser_locked = false;
     }
 
     init() {
@@ -117,12 +115,9 @@ class ForgeCanvas {
         const resetButton = document.getElementById(`resetButton_${self.uuid}`);
         const undoButton = document.getElementById(`undoButton_${self.uuid}`);
         const redoButton = document.getElementById(`redoButton_${self.uuid}`);
-        const eraseButton = document.getElementById(`eraseButton_${self.uuid}`);
 
         const uploadHint = document.getElementById(`uploadHint_${self.uuid}`);
         const scribbleIndicator = document.getElementById(`scribbleIndicator_${self.uuid}`);
-
-        self.setupResizableInpaintContainer(container, imageContainer);
 
         minButton.style.display = "none";
         this.maximized = false;
@@ -152,35 +147,6 @@ class ForgeCanvas {
         const scribbleSoftnessLabel = document.getElementById(`softnessLabel_${self.uuid}`);
         scribbleSoftness.value = self.scribbleSoftness;
         scribbleSoftnessLabel.textContent = `Brush Softness (${self.scribbleSoftness})`;
-
-        const setEraser = (active, temporary = false) => {
-            if (active) {
-                if (self._original_alpha === null) {
-                    self._original_alpha = scribbleAlpha.value;
-                }
-                scribbleAlpha.value = 0.0;
-                updateInput(scribbleAlpha);
-                scribbleIndicator.style.border = "2px dotted";
-                if (!temporary) {
-                    self._eraser_locked = true;
-                    if (eraseButton) eraseButton.classList.add("forge-btn-active");
-                }
-                return;
-            }
-
-            if (temporary && self._eraser_locked) {
-                return;
-            }
-
-            if (self._original_alpha !== null) {
-                scribbleAlpha.value = self._original_alpha;
-                self._original_alpha = null;
-                updateInput(scribbleAlpha);
-            }
-            scribbleIndicator.style.border = "1px solid";
-            self._eraser_locked = false;
-            if (eraseButton) eraseButton.classList.remove("forge-btn-active");
-        };
 
         const indicatorSize = self.scribbleWidth * 4;
         scribbleIndicator.style.width = `${indicatorSize}px`;
@@ -230,6 +196,14 @@ class ForgeCanvas {
             scribbleIndicator.style.top = `${e.clientY - rect.top - indicatorSize / 2}px`;
         }
 
+        function endStroke() {
+            if (!self.drawing) return;
+            self.drawing = false;
+            drawingCanvas.style.cursor = "";
+            scribbleIndicator.style.display = "none";
+            self.saveState();
+        }
+
         const resizeObserver = new ResizeObserver(() => {
             self.adjustInitialPositionAndScale();
             self.drawImage();
@@ -267,16 +241,6 @@ class ForgeCanvas {
             self.redo();
         });
 
-        if (eraseButton) {
-            eraseButton.addEventListener("click", () => {
-                if (self._eraser_locked) {
-                    setEraser(false, false);
-                } else {
-                    setEraser(true, false);
-                }
-            });
-        }
-
         scribbleColor.addEventListener("input", (e) => {
             self.scribbleColor = e.target.value;
             scribbleIndicator.style.borderColor = self.scribbleColor;
@@ -302,6 +266,8 @@ class ForgeCanvas {
 
         drawingCanvas.addEventListener("pointerdown", (e) => {
             if (!self.img || e.button !== 0 || self.no_scribbles) return;
+            e.preventDefault();
+            drawingCanvas.setPointerCapture(e.pointerId);
             const rect = drawingCanvas.getBoundingClientRect();
             self.drawing = true;
             drawingCanvas.style.cursor = "crosshair";
@@ -324,16 +290,20 @@ class ForgeCanvas {
             e.stopPropagation();
         });
 
-        drawingCanvas.addEventListener("pointerup", () => {
-            self.drawing = false;
-            drawingCanvas.style.cursor = "";
-            self.saveState();
+        drawingCanvas.addEventListener("pointerup", (e) => {
+            if (drawingCanvas.hasPointerCapture(e.pointerId)) drawingCanvas.releasePointerCapture(e.pointerId);
+            endStroke();
         });
 
-        drawingCanvas.addEventListener("pointerout", () => {
-            self.drawing = false;
-            drawingCanvas.style.cursor = "";
+        drawingCanvas.addEventListener("pointercancel", (e) => {
+            if (drawingCanvas.hasPointerCapture(e.pointerId)) drawingCanvas.releasePointerCapture(e.pointerId);
+            endStroke();
+        });
+
+        drawingCanvas.addEventListener("pointerout", (e) => {
             scribbleIndicator.style.display = "none";
+            if (!drawingCanvas.hasPointerCapture(e.pointerId)) return;
+            endStroke();
         });
 
         container.addEventListener("pointerdown", (e) => {
@@ -378,7 +348,7 @@ class ForgeCanvas {
             const delta = e.deltaY * -0.001;
             let scale = true;
 
-            if (e.ctrlKey) {
+            if (this._held_W) {
                 // Width
                 scribbleWidth.value = parseInt(scribbleWidth.value) - Math.sign(e.deltaY) * 3;
                 updateInput(scribbleWidth);
@@ -474,7 +444,10 @@ class ForgeCanvas {
             if (!self.pointerInsideContainer) return;
             if (e.shiftKey) {
                 e.preventDefault();
-                setEraser(true, true);
+                if (this._original_alpha === null) this._original_alpha = scribbleAlpha.value;
+                scribbleAlpha.value = 0.0;
+                updateInput(scribbleAlpha);
+                scribbleIndicator.style.border = "2px dotted";
                 return;
             }
             if (e.ctrlKey && e.key === "z") {
@@ -496,21 +469,26 @@ class ForgeCanvas {
                 centerButton.click();
             }
             if (e.key === "f") {
-                if (maxButton.style.display === "none")
-                    minButton.click();
-                else
-                    maxButton.click();
+                if (maxButton.style.display === "none") minButton.click();
+                else maxButton.click();
             }
 
+            if (e.key === "w") this._held_W = true;
             if (e.key === "a") this._held_A = true;
             if (e.key === "s") this._held_S = true;
         });
 
         document.addEventListener("keyup", () => {
+            this._held_W = false;
             this._held_A = false;
             this._held_S = false;
 
-            setEraser(false, true);
+            if (this._original_alpha !== null) {
+                scribbleAlpha.value = this._original_alpha;
+                this._original_alpha = null;
+                updateInput(scribbleAlpha);
+                scribbleIndicator.style.border = "1px solid";
+            }
         });
 
         maxButton.addEventListener("click", () => {
@@ -532,102 +510,6 @@ class ForgeCanvas {
         });
     }
 
-    getResizeStorageKey() {
-        return this.resizePersistKey ? `forge_inpaint_editor_height:${this.resizePersistKey}` : null;
-    }
-
-    getSavedResizeHeight() {
-        const key = this.getResizeStorageKey();
-        if (!key) return null;
-        try {
-            const raw = window.localStorage.getItem(key);
-            const parsed = Number.parseInt(raw, 10);
-            if (!Number.isFinite(parsed)) return null;
-            return Math.max(320, Math.min(1400, parsed));
-        } catch (e) {
-            return null;
-        }
-    }
-
-    saveResizeHeight(height) {
-        const key = this.getResizeStorageKey();
-        if (!key) return;
-        const normalized = Math.max(320, Math.min(1400, Math.round(height)));
-        try {
-            window.localStorage.setItem(key, String(normalized));
-        } catch (e) { }
-    }
-
-    applyResizeHeight(container, imageContainer, height) {
-        const normalized = Math.max(320, Math.min(1400, Math.round(height)));
-        container.style.height = `${normalized}px`;
-        if (container.parentElement) {
-            container.parentElement.style.minHeight = `${normalized}px`;
-        }
-        if (imageContainer) {
-            imageContainer.style.height = `${Math.max(0, normalized - 6)}px`;
-        }
-    }
-
-    setupResizableInpaintContainer(container, imageContainer) {
-        if (!["img2maskimg", "inpaint_sketch", "img_inpaint_mask"].includes(this.resizePersistKey)) {
-            return;
-        }
-
-        container.classList.add("is-resizable-inpaint");
-
-        const savedHeight = this.getSavedResizeHeight();
-        if (savedHeight) {
-            this.initial_height = savedHeight;
-            this.applyResizeHeight(container, imageContainer, savedHeight);
-        }
-
-        if (container.querySelector(".forge-inpaint-resize-handle")) {
-            return;
-        }
-
-        const handle = document.createElement("div");
-        handle.className = "forge-inpaint-resize-handle";
-        handle.title = "Drag to resize this inpaint editor. Double-click to reset.";
-        handle.setAttribute("role", "separator");
-        handle.setAttribute("aria-label", "Resize inpaint editor");
-        handle.innerHTML = '<span class="forge-inpaint-resize-grip" aria-hidden="true"></span>';
-
-        handle.addEventListener("dblclick", (event) => {
-            event.preventDefault();
-            this.applyResizeHeight(container, imageContainer, 512);
-            this.saveResizeHeight(512);
-        });
-
-        handle.addEventListener("pointerdown", (event) => {
-            event.preventDefault();
-            event.stopPropagation();
-
-            const startY = event.clientY;
-            const startHeight = container.getBoundingClientRect().height || this.initial_height || 512;
-            container.classList.add("is-resizing-inpaint");
-            document.body.classList.add("forge-inpaint-resizing");
-
-            const onMove = (moveEvent) => {
-                const delta = moveEvent.clientY - startY;
-                this.applyResizeHeight(container, imageContainer, startHeight + delta);
-            };
-
-            const onUp = () => {
-                window.removeEventListener("pointermove", onMove);
-                window.removeEventListener("pointerup", onUp);
-                container.classList.remove("is-resizing-inpaint");
-                document.body.classList.remove("forge-inpaint-resizing");
-                this.saveResizeHeight(container.getBoundingClientRect().height);
-            };
-
-            window.addEventListener("pointermove", onMove);
-            window.addEventListener("pointerup", onUp, { once: true });
-        });
-
-        container.appendChild(handle);
-    }
-
     handleDraw(e) {
         const canvas = this.drawingCanvas_;
         const ctx = canvas.getContext("2d");
@@ -646,7 +528,7 @@ class ForgeCanvas {
 
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
-        ctx.lineWidth = this.scribbleWidth / (this.scribbleWidthConsistent ? this.imgScale : 1.0) * 4;
+        ctx.lineWidth = (this.scribbleWidth / (this.scribbleWidthConsistent ? this.imgScale : 1.0)) * 4;
 
         if (this.scribbleAlpha <= 0) {
             ctx.globalCompositeOperation = "destination-out";
@@ -734,17 +616,12 @@ class ForgeCanvas {
             this.orgWidth = image.width;
             this.orgHeight = image.height;
             const canvas = document.getElementById(`drawingCanvas_${this.uuid}`);
-            const ctx = canvas.getContext("2d");
             if (canvas.width !== image.width || canvas.height !== image.height) {
                 canvas.width = image.width;
                 canvas.height = image.height;
             }
             this.adjustInitialPositionAndScale();
             this.drawImage();
-            if (this.foregroundAsMain) {
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-                ctx.drawImage(image, 0, 0, this.orgWidth, this.orgHeight);
-            }
             this.updateBackgroundImageData();
             this.saveState();
             this.updateUndoRedoButtons();
@@ -802,7 +679,7 @@ class ForgeCanvas {
             image.style.height = `${scaledHeight}px`;
             image.style.left = `${this.imgX}px`;
             image.style.top = `${this.imgY}px`;
-            image.style.display = this.foregroundAsMain ? "none" : "block";
+            image.style.display = "block";
             drawingCanvas.style.width = `${scaledWidth}px`;
             drawingCanvas.style.height = `${scaledHeight}px`;
             drawingCanvas.style.left = `${this.imgX}px`;
@@ -858,6 +735,10 @@ class ForgeCanvas {
         this.history = this.history.slice(0, this.historyIndex + 1);
         this.history.push(imageData);
         this.historyIndex++;
+        if (this.history.length > HISTORY_LIMIT) {
+            this.history.shift();
+            this.historyIndex--;
+        }
         this.updateUndoRedoButtons();
         this.updateDrawingData();
     }
@@ -923,10 +804,8 @@ class ForgeCanvas {
     maximize() {
         if (this.maximized) return;
         const container = document.getElementById(`container_${this.uuid}`);
-        const imageContainer = document.getElementById(`imageContainer_${this.uuid}`);
         const maxButton = document.getElementById(`maxButton_${this.uuid}`);
         const minButton = document.getElementById(`minButton_${this.uuid}`);
-        const containerParent = container.parentElement;
 
         this.originalState = {
             width: container.style.width,
@@ -935,8 +814,6 @@ class ForgeCanvas {
             left: container.style.left,
             position: container.style.position,
             zIndex: container.style.zIndex,
-            parentMinHeight: containerParent ? containerParent.style.minHeight : "",
-            imageContainerHeight: imageContainer ? imageContainer.style.height : "",
         };
 
         container.style.width = "100vw";
@@ -945,12 +822,6 @@ class ForgeCanvas {
         container.style.left = "0";
         container.style.position = "fixed";
         container.style.zIndex = "1000";
-        if (containerParent) {
-            containerParent.style.minHeight = "";
-        }
-        if (imageContainer) {
-            imageContainer.style.height = "calc(100% - 6px)";
-        }
         maxButton.style.display = "none";
         minButton.style.display = "inline-block";
         this.maximized = true;
@@ -959,10 +830,8 @@ class ForgeCanvas {
     minimize() {
         if (!this.maximized) return;
         const container = document.getElementById(`container_${this.uuid}`);
-        const imageContainer = document.getElementById(`imageContainer_${this.uuid}`);
         const maxButton = document.getElementById(`maxButton_${this.uuid}`);
         const minButton = document.getElementById(`minButton_${this.uuid}`);
-        const containerParent = container.parentElement;
 
         container.style.width = this.originalState.width;
         container.style.height = this.originalState.height;
@@ -970,12 +839,6 @@ class ForgeCanvas {
         container.style.left = this.originalState.left;
         container.style.position = this.originalState.position;
         container.style.zIndex = this.originalState.zIndex;
-        if (containerParent) {
-            containerParent.style.minHeight = this.originalState.parentMinHeight || "";
-        }
-        if (imageContainer) {
-            imageContainer.style.height = this.originalState.imageContainerHeight || "";
-        }
         maxButton.style.display = "inline-block";
         minButton.style.display = "none";
         this.maximized = false;

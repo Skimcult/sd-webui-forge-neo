@@ -1,5 +1,9 @@
 import inspect
 from collections import namedtuple
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from backend.diffusion_engine.base import ForgeDiffusionEngine
 
 import k_diffusion.sampling
 import numpy as np
@@ -68,6 +72,8 @@ def samples_to_images_tensor(sample, approximation=None, model=None):
 
 def single_sample_to_image(sample, approximation=None):
     x_sample = samples_to_images_tensor(sample.unsqueeze(0), approximation)[0] * 0.5 + 0.5
+    if x_sample.ndim == 4:
+        x_sample = x_sample.squeeze(0)
 
     x_sample = x_sample.cpu()
     x_sample.mul_(255.0)
@@ -90,6 +96,41 @@ def sample_to_image(samples, index=0, approximation=None):
 
 def samples_to_image_grid(samples, approximation=None):
     return images.image_grid([single_sample_to_image(sample, approximation) for sample in samples])
+
+
+def frames_to_gif(frames: list[Image.Image], fps=16):
+    import io
+
+    buffer = io.BytesIO()
+
+    frames[0].save(
+        buffer,
+        format="GIF",
+        save_all=True,
+        append_images=frames[1:],
+        duration=int(1000 / fps),
+        loop=0,
+    )
+
+    buffer.seek(0)
+
+    gif_image = Image.open(buffer)
+    gif_image.load()
+
+    return gif_image
+
+
+def sample_to_video(samples, approximation=None):
+    x_sample = samples_to_images_tensor(samples, approximation)[0] * 0.5 + 0.5
+
+    x_sample = x_sample.cpu()
+    x_sample.mul_(255.0)
+    x_sample.round_()
+    x_sample.clamp_(0.0, 255.0)
+    x_sample = x_sample.to(torch.uint8)
+
+    frames = [Image.fromarray(np.moveaxis(_sample.numpy(), 0, 2)) for _sample in x_sample]
+    return frames_to_gif(frames)
 
 
 def images_tensor_to_samples(image, approximation=None, model=None):
@@ -119,10 +160,6 @@ def images_tensor_to_samples(image, approximation=None, model=None):
 
 def store_latent(decoded):
     state.current_latent = decoded
-
-    if opts.live_previews_enable and opts.show_progress_every_n_steps > 0 and shared.state.sampling_step % opts.show_progress_every_n_steps == 0:
-        if not shared.parallel_processing_allowed:
-            shared.state.assign_current_image(sample_to_image(decoded))
 
 
 def is_sampler_using_eta_noise_seed_delta(p):
@@ -215,13 +252,15 @@ def apply_refiner(cfg_denoiser, x, sigma):
     cfg_denoiser.p.extra_generation_params["Refiner switch at"] = refiner_switch_at
 
     if opts.refiner_fast_sd:
+        sd_model: "ForgeDiffusionEngine" = shared.sd_model
+
         import huggingface_guess
 
         from backend.loader import preprocess_state_dict
         from backend.state_dict import load_state_dict, try_filter_state_dict
         from backend.utils import load_torch_file
 
-        model = sd_models.model_data.get_sd_model().forge_objects.unet.model.diffusion_model
+        model = sd_model.forge_objects.unet.model.diffusion_model
 
         sd = load_torch_file(refiner_checkpoint_info.filename)
         sd = preprocess_state_dict(sd)
@@ -234,9 +273,31 @@ def apply_refiner(cfg_denoiser, x, sigma):
         ORIGINAL_CHECKPOINT = shared.sd_model.sd_checkpoint_info.filename
         load_state_dict(model, sd)
 
+        if refiner_checkpoint_info.filename.lower().endswith(".gguf"):
+
+            from backend.memory_management import bake_gguf_model
+
+            sd_model.forge_objects.unet.model.gguf_baked = False
+            sd_model.forge_objects.unet.model = bake_gguf_model(sd_model.forge_objects.unet.model)
+
+        # 1. reset the current_lora_hash so networks.py load_networks() parse the LoRA again
+        sd_model.current_lora_hash = str([])
+
+        # 2. parse the LoRA to update ModelPatcher patches / online_patches
+        if not cfg_denoiser.p.disable_extra_networks:
+            loras = cfg_denoiser.p.extra_network_data.pop("lora", None)
+            cfg_denoiser.p.extra_network_data["lora"] = apply_lora_for_refiner(loras)
+            extra_networks.activate(cfg_denoiser.p, cfg_denoiser.p.extra_network_data)
+
+        # 3. load the new LoRA
+        sd_model.forge_objects.unet.refresh_loras()
+
+        # 4. reset the current_lora_hash again for the non-refiner pass
+        sd_model.current_lora_hash = str([])
+
         return True
 
-    sampling_cleanup(sd_models.model_data.get_sd_model().forge_objects.unet)
+    sampling_cleanup(shared.sd_model.forge_objects.unet)
 
     original_checkpoint = getattr(shared.opts, "sd_model_checkpoint")
     checkpoint_changed = main_entry.checkpoint_change(refiner_checkpoint_info.short_title, preset=None, save=False, refresh=False)
@@ -259,7 +320,7 @@ def apply_refiner(cfg_denoiser, x, sigma):
     cfg_denoiser.p.setup_conds()
     cfg_denoiser.update_inner_model()
 
-    sampling_prepare(sd_models.model_data.get_sd_model().forge_objects.unet, x=x)
+    sampling_prepare(shared.sd_model.forge_objects.unet, x=x)
     return True
 
 
@@ -321,6 +382,7 @@ class Sampler:
             raise InterruptedException
 
         state.sampling_step = step
+        state.preview_step = step + 1
         shared.total_tqdm.update()
 
     def launch_sampling(self, steps, func):
@@ -328,6 +390,7 @@ class Sampler:
         self.model_wrap_cfg.total_steps = self.config.total_steps(steps)
         state.sampling_steps = steps
         state.sampling_step = 0
+        state.preview_step = 0
 
         try:
             return func()
@@ -389,10 +452,7 @@ class Sampler:
         return extra_params_kwargs
 
     def create_noise_sampler(self, x, sigmas, p):
-        """For DPM++ SDE: manually create noise sampler to enable deterministic results across different batch sizes"""
-        if shared.opts.no_dpmpp_sde_batch_determinism:
-            return None
-
+        # manually create noise sampler to enable deterministic results across different batch sizes
         from k_diffusion.sampling import BrownianTreeNoiseSampler
 
         # Boolean indexing (masked select) on XPU can exhaust Level Zero resources

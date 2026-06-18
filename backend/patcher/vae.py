@@ -121,7 +121,7 @@ def tiled_scale(samples, function, tile_x=64, tile_y=64, overlap=8, upscale_amou
 
 
 class VAE:
-    def __init__(self, model=None, device=None, dtype=None, no_init=False, *, is_wan=False, is_flux2=False):
+    def __init__(self, model=None, device=None, dtype=None, no_init=False, *, is_wan=False, is_flux2=False, is_mugen=False):
         if no_init:
             return
 
@@ -131,7 +131,7 @@ class VAE:
             self.downscale_ratio = 8
             self.downscale_index_formula = None
             self.latent_dim = 2
-            self.latent_channels = int(model.config.latent_channels)  # 4 | 16
+            self.latent_channels = 32 if is_mugen else int(model.config.latent_channels)  # 4 | 16
             self.memory_used_encode = lambda shape, dtype: (1767 * shape[2] * shape[3]) * memory_management.dtype_size(dtype)
             self.memory_used_decode = lambda shape, dtype: (2178 * shape[2] * shape[3] * 64) * memory_management.dtype_size(dtype)
 
@@ -214,13 +214,15 @@ class VAE:
             batch_number = max(1, batch_number)
 
             for x in range(0, samples_in.shape[0], batch_number):
-                samples = samples_in[x : x + batch_number].to(self.vae_dtype).to(self.device)
-                out = self.process_output(self.first_stage_model.decode(samples).to(self.output_device).float())
+                samples = samples_in[x : x + batch_number].to(device=self.device, dtype=self.vae_dtype)
+                out = self.process_output(self.first_stage_model.decode(samples).to(device=self.output_device, dtype=torch.float32, copy=True))
                 if pixel_samples is None:
                     pixel_samples = torch.empty((samples_in.shape[0],) + tuple(out.shape[1:]), device=self.output_device)
                 pixel_samples[x : x + batch_number] = out
-        except memory_management.OOM_EXCEPTION:
-            print("Warning: Encountered Out of Memory during VAE decoding; Retrying with Tiled VAE Decoding...")
+        except Exception as e:
+            if not memory_management.is_oom(e):
+                raise e
+            memory_management.logger.warning("Encountered Out of Memory during VAE decoding; Retrying with Tiled VAE Decoding...")
             _tile = True
 
         if _tile:
@@ -270,8 +272,10 @@ class VAE:
                     samples = torch.empty((_samples.shape[0],) + tuple(out.shape[1:]), device=self.output_device)
                 samples[x : x + batch_number] = out
             _tile = False
-        except memory_management.OOM_EXCEPTION:
-            print("Warning: Encountered Out of Memory during VAE Encoding; Retrying with Tiled VAE Encoding...")
+        except Exception as e:
+            if not memory_management.is_oom(e):
+                raise e
+            memory_management.logger.warning("Encountered Out of Memory during VAE Encoding; Retrying with Tiled VAE Encoding...")
             _tile = True
 
         if _tile:
@@ -303,8 +307,10 @@ class VAE:
         maximum = self.upscale_ratio[0](self.downscale_ratio[0](pixel_samples.shape[2]))
         return self.encode_tiled_3d(pixel_samples[:, :, :maximum], **args)
 
-    def process_input(self, image):
+    @staticmethod
+    def process_input(image: torch.Tensor):
         return image * 2.0 - 1.0
 
-    def process_output(self, image):
-        return torch.clamp((image + 1.0) / 2.0, min=0.0, max=1.0)
+    @staticmethod
+    def process_output(image: torch.Tensor):
+        return image.add_(1.0).div_(2.0).clamp_(0.0, 1.0)

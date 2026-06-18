@@ -95,8 +95,7 @@ def int8_forward_dynamic_per_row(x: torch.Tensor, weight: torch.Tensor, weight_s
     return res_scaled
 
 
-# region INT8ModelPatcher
-
+# region load_lora_int8
 
 from typing import TYPE_CHECKING
 
@@ -142,9 +141,9 @@ class INT8ModelPatcher(UnetPatcher):
             device = weight.device if weight is not None else self.offload_device
             lora_patches = []
             for p in patches:
-                strength_patch = p[0]   # float
-                adapter = p[1]          # the LoRA adapter object
-                strength_model = p[2]   # float
+                strength_patch = p[0]  # float
+                adapter = p[1]  # the LoRA adapter object
+                strength_model = p[2]  # float
                 offset = p[3] if len(p) > 3 else None  # (dim, start, size) or None
 
                 if not hasattr(adapter, "weights"):
@@ -232,7 +231,9 @@ class INT8ModelPatcher(UnetPatcher):
                 patched_weight_float = rotate_weight(patched_weight_float, H, group_size=group_size)
 
             # 5. Re-quantize back to INT8 using the original scale
-            patched_weight_int8 = quantize_int8(patched_weight_float, scale)
+            patched_weight_int8 = quantize_int8(patched_weight_float, scale)  # stochastic_round_int8_delta(patched_weight_float, scale)
+            # I'm not really sure whether to stochastic round or not, results seem to depend on a per-lora basis.
+            # If quality is of the utmost importance, I recommend Pre-Lora instead of worrying about this.
 
             # 6. Move back to original device and store
             patched_weight_int8 = patched_weight_int8.to(weight_int8.device)

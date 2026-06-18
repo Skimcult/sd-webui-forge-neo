@@ -81,6 +81,7 @@ def txt2img_upscale_function(id_task: str, request: gr.Request, gallery, gallery
     if opts.txt2img_upscale_single_batch:
         p.batch_size = 1
         p.n_iter = 1
+
     # txt2img_upscale attribute that signifies this is called by txt2img_upscale
     p.txt2img_upscale = True
 

@@ -16,10 +16,13 @@ class UnetPatcher(ModelPatcher):
         model = KModel(model=model, diffusers_scheduler=diffusers_scheduler, k_predictor=k_predictor, config=config)
         if isinstance(model.diffusion_model, NunchakuModelMixin):
             return NunchakuPatcher(model, load_device=model.diffusion_model.load_device, offload_device=model.diffusion_model.offload_device, current_device=model.diffusion_model.initial_device)
-        if dynamic_args.ops is not None and dynamic_args.ops.endswith("Int8"):
-            from backend.operations_int8 import INT8ModelPatcher
-            return INT8ModelPatcher(model, load_device=model.diffusion_model.load_device, offload_device=model.diffusion_model.offload_device, current_device=model.diffusion_model.initial_device)
-        return UnetPatcher(model, load_device=model.diffusion_model.load_device, offload_device=model.diffusion_model.offload_device, current_device=model.diffusion_model.initial_device)
+        else:
+            if dynamic_args.ops.endswith("Int8"):
+                from backend.operations_int8 import INT8ModelPatcher
+
+                return INT8ModelPatcher(model, load_device=model.diffusion_model.load_device, offload_device=model.diffusion_model.offload_device, current_device=model.diffusion_model.initial_device)
+
+            return UnetPatcher(model, load_device=model.diffusion_model.load_device, offload_device=model.diffusion_model.offload_device, current_device=model.diffusion_model.initial_device)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

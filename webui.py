@@ -1,4 +1,6 @@
-from __future__ import annotations
+if __name__ == "__main__":
+    raise SystemError("Call launch.py instead")
+
 
 import os
 import time
@@ -9,7 +11,6 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
 from modules import initialize, initialize_util, timer
-from modules_forge import main_thread
 from modules_forge.initialization import initialize_forge
 
 startup_timer = timer.startup_timer
@@ -78,11 +79,6 @@ def webui_worker():
         ui_tempdir,
     )
 
-    try:
-        from modules import ui_rewrite
-    except ImportError:
-        ui_rewrite = None
-
     while 1:
         if shared.opts.clean_temp_dir_at_start:
             ui_tempdir.cleanup_tmpdr()
@@ -130,14 +126,16 @@ def webui_worker():
 
         startup_timer.record("gradio launch")
 
+        # gradio uses a very open CORS policy via app.user_middleware, which makes it possible for
+        # an attacker to trick the user into opening a malicious HTML page, which makes a request to the
+        # running web ui and do whatever the attacker wants, including installing an extension and
+        # running its code. We disable this here. Suggested by RyotaK.
         app.user_middleware = [x for x in app.user_middleware if x.cls.__name__ != "CORSMiddleware"]
 
         initialize_util.setup_middleware(app)
 
         progress.setup_progress_api(app)
         ui.setup_ui_api(app)
-        if ui_rewrite is not None:
-            ui_rewrite.setup_ui_rewrite(app)
 
         if launch_api:
             create_api(app)
@@ -166,9 +164,11 @@ def webui_worker():
 
         if server_command == "stop":
             print("Stopping server...")
+            # If we catch a keyboard interrupt, we want to stop the server and exit.
             shared.demo.close()
             break
 
+        # disable auto launch webui in browser for subsequent UI Reload
         os.environ.setdefault("SD_WEBUI_RESTARTING", "1")
 
         print("Restarting UI...")
@@ -188,14 +188,3 @@ def api_only():
 
 def webui():
     Thread(target=webui_worker, daemon=True).start()
-
-
-if __name__ == "__main__":
-    from modules.shared_cmd_options import cmd_opts
-
-    if cmd_opts.nowebui:
-        api_only()
-    else:
-        webui()
-
-    main_thread.loop()

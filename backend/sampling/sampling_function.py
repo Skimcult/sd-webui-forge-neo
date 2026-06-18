@@ -113,11 +113,6 @@ def can_concat_cond(c1, c2):
 
 
 def cond_cat(c_list):
-    c_crossattn = []
-    c_concat = []
-    c_adm = []
-    crossattn_max_len = 0
-
     temp = {}
     for x in c_list:
         for k in x:
@@ -377,13 +372,13 @@ def sampling_prepare(unet: "UnetPatcher", x: torch.Tensor):
         additional_model_patchers += unet.controlnet_linked_list.get_models()
 
     if unet.has_online_lora():
-        lora_memory = utils.nested_compute_size(unet.lora_patches, element_size=utils.dtype_to_element_size(unet.model.computation_dtype))
+        lora_memory = utils.nested_compute_size(unet.online_patches, element_size=utils.dtype_to_element_size(unet.model.computation_dtype))
         additional_inference_memory += lora_memory
 
     memory_management.load_models_gpu(models=[unet] + additional_model_patchers, memory_required=unet_inference_memory + additional_inference_memory, minimum_memory_required=unet_inference_memory // 2 + additional_inference_memory)
 
     if unet.has_online_lora():
-        utils.nested_move_to_device(unet.lora_patches, device=unet.current_device, dtype=unet.model.computation_dtype)
+        utils.nested_move_to_device(unet.online_patches, device=unet.current_device, dtype=unet.model.computation_dtype)
 
     real_model = unet.model
 
@@ -392,12 +387,10 @@ def sampling_prepare(unet: "UnetPatcher", x: torch.Tensor):
     for cnet in unet.list_controlnets():
         cnet.pre_run(real_model, percent_to_timestep_function)
 
-    return
-
 
 def sampling_cleanup(unet: "UnetPatcher"):
     if unet.has_online_lora():
-        utils.nested_move_to_device(unet.lora_patches, device=unet.offload_device)
+        utils.nested_move_to_device(unet.online_patches, device=unet.offload_device)
     for cnet in unet.list_controlnets():
         cnet.cleanup()
 

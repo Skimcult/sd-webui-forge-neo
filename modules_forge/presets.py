@@ -10,6 +10,7 @@ class PresetArch(Enum):
     lumina = 6  # Lumina-Image-2.0
     zit = 7  # Z-Image-Turbo
     wan = 8  # Wan2.2
+    ernie = 9  # Ernie-Image
 
     @staticmethod
     def choices() -> list[str]:
@@ -25,6 +26,7 @@ SAMPLERS = {
     PresetArch.lumina: "Res Multistep",
     PresetArch.zit: "Euler",
     PresetArch.wan: "Euler",
+    PresetArch.ernie: "Euler",
 }
 
 SCHEDULERS = {
@@ -36,6 +38,7 @@ SCHEDULERS = {
     PresetArch.lumina: "Simple",
     PresetArch.zit: "Beta",
     PresetArch.wan: "Simple",
+    PresetArch.ernie: "Simple",
 }
 
 STEPS = {
@@ -47,6 +50,7 @@ STEPS = {
     PresetArch.lumina: 32,
     PresetArch.zit: 9,
     PresetArch.wan: 4,
+    PresetArch.ernie: 8,
 }
 
 CFG = {
@@ -58,6 +62,7 @@ CFG = {
     PresetArch.lumina: 4.0,
     PresetArch.zit: 1.0,
     PresetArch.wan: 1.0,
+    PresetArch.ernie: 1.0,
 }
 
 DISTILL = {
@@ -65,9 +70,15 @@ DISTILL = {
 }
 
 SHIFT = {
+    PresetArch.xl: -9.0,
     PresetArch.lumina: 6.0,
     PresetArch.zit: 9.0,
     PresetArch.wan: 5.0,
+    PresetArch.ernie: 3.0,
+}
+
+FRAMES = {
+    PresetArch.wan.name: 16,
 }
 
 
@@ -77,6 +88,10 @@ def use_distill(arch: str) -> bool:
 
 def use_shift(arch: str) -> bool:
     return arch in [preset.name for preset in SHIFT.keys()]
+
+
+def is_video(arch: str) -> int:
+    return FRAMES.get(arch, 1)
 
 
 def register(options_templates: dict):
@@ -94,6 +109,7 @@ def register(options_templates: dict):
                 {
                     f"forge_checkpoint_{name}": OptionInfo(None),
                     f"forge_additional_modules_{name}": OptionInfo([]),
+                    f"forge_unet_storage_dtype_{name}": OptionInfo("Automatic"),
                 },
             )
         )
@@ -105,12 +121,12 @@ def register(options_templates: dict):
                 (f"ui_{name}", name.upper(), "presets"),
                 {
                     f"{name}_t2i_ss1": OptionRow(),
-                    f"{name}_t2i_sampler": OptionInfo(sampler, "txt2img sampler", Dropdown, lambda: {"choices": [x.name for x in list_samplers()]}),
-                    f"{name}_t2i_scheduler": OptionInfo(scheduler, "txt2img scheduler", Dropdown, lambda: {"choices": list_schedulers()}),
+                    f"{name}_t2i_sampler": OptionInfo(sampler, "txt2img Sampler", Dropdown, lambda: {"choices": [x.name for x in list_samplers()]}),
+                    f"{name}_t2i_scheduler": OptionInfo(scheduler, "txt2img Scheduler", Dropdown, lambda: {"choices": list_schedulers()}),
                     f"{name}_t2i_ss0": OptionRow(),
                     f"{name}_i2i_ss1": OptionRow(),
-                    f"{name}_i2i_sampler": OptionInfo(sampler, "img2img sampler", Dropdown, lambda: {"choices": [x.name for x in list_samplers()]}),
-                    f"{name}_i2i_scheduler": OptionInfo(scheduler, "img2img scheduler", Dropdown, lambda: {"choices": list_schedulers()}),
+                    f"{name}_i2i_sampler": OptionInfo(sampler, "img2img Sampler", Dropdown, lambda: {"choices": [x.name for x in list_samplers()]}),
+                    f"{name}_i2i_scheduler": OptionInfo(scheduler, "img2img Scheduler", Dropdown, lambda: {"choices": list_schedulers()}),
                     f"{name}_i2i_ss0": OptionRow(),
                 },
             )
@@ -165,11 +181,37 @@ def register(options_templates: dict):
                 options_section(
                     (f"ui_{name}", name.upper(), "presets"),
                     {
+                        f"{name}_show_shift": OptionInfo((shift > 0.0), "Display Shift Slider"),
                         f"{name}_dcfg1": OptionRow(),
-                        f"{name}_t2i_dcfg": OptionInfo(shift, "txt2img Shift", Slider, {"minimum": 1, "maximum": 24, "step": 0.5}),
-                        f"{name}_t2i_hr_dcfg": OptionInfo(shift, "txt2img Hires. Shift", Slider, {"minimum": 1, "maximum": 24, "step": 0.5}),
-                        f"{name}_i2i_dcfg": OptionInfo(shift, "img2img Shift", Slider, {"minimum": 1, "maximum": 24, "step": 0.5}),
+                        f"{name}_t2i_dcfg": OptionInfo(abs(shift), "txt2img Shift", Slider, {"minimum": 1, "maximum": 24, "step": 0.5}),
+                        f"{name}_t2i_hr_dcfg": OptionInfo(abs(shift), "txt2img Hires. Shift", Slider, {"minimum": 1, "maximum": 24, "step": 0.5}),
+                        f"{name}_i2i_dcfg": OptionInfo(abs(shift), "img2img Shift", Slider, {"minimum": 1, "maximum": 24, "step": 0.5}),
                         f"{name}_dcfg0": OptionRow(),
+                    },
+                )
+            )
+
+        if (fps := FRAMES.get(arch.name, 1)) > 1:
+            options_templates.update(
+                options_section(
+                    (f"ui_{name}", name.upper(), "presets"),
+                    {
+                        f"{name}_batch1": OptionRow(),
+                        f"{name}_t2i_batch_size": OptionInfo(1, "txt2img Frames", Slider, {"minimum": 1, "maximum": fps * 15 + 1, "step": fps}),
+                        f"{name}_i2i_batch_size": OptionInfo(1, "img2img Frames", Slider, {"minimum": 1, "maximum": fps * 15 + 1, "step": fps}),
+                        f"{name}_batch0": OptionRow(),
+                    },
+                )
+            )
+        else:
+            options_templates.update(
+                options_section(
+                    (f"ui_{name}", name.upper(), "presets"),
+                    {
+                        f"{name}_batch1": OptionRow(),
+                        f"{name}_t2i_batch_size": OptionInfo(1, "txt2img Batch Size", Slider, {"minimum": 1, "maximum": 8, "step": 1}),
+                        f"{name}_i2i_batch_size": OptionInfo(1, "img2img Batch Size", Slider, {"minimum": 1, "maximum": 8, "step": 1}),
+                        f"{name}_batch0": OptionRow(),
                     },
                 )
             )

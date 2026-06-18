@@ -51,13 +51,13 @@ class BASE:
         return True
 
     def model_type(self, state_dict):
-        return ModelType.EPS
+        return ModelType.FLOW
 
     def clip_target(self, state_dict: dict):
         return {}
 
     def inpaint_model(self):
-        return self.unet_config.get("in_channels", -1) > 4
+        return False
 
     def __init__(self, unet_config):
         self.unet_config = unet_config.copy()
@@ -115,6 +115,12 @@ class SD15(BASE):
     latent_format = latent.SD15
     memory_usage_factor = 1.0
 
+    def inpaint_model(self):
+        return self.unet_config.get("in_channels", -1) > 4
+
+    def model_type(self, state_dict):
+        return ModelType.EPS
+
     def process_clip_state_dict(self, state_dict):
         k = list(state_dict.keys())
         for x in k:
@@ -158,6 +164,9 @@ class SDXLRefiner(BASE):
     latent_format = latent.SDXL
     memory_usage_factor = 1.0
 
+    def model_type(self, state_dict: dict):
+        return ModelType.EPS
+
     def process_clip_state_dict(self, state_dict):
         replace_prefix = {"conditioner.embedders.0.model.": "clip_g."}
         state_dict = utils.state_dict_prefix_replace(state_dict, replace_prefix, filter_keys=True)
@@ -179,6 +188,7 @@ class SDXL(BASE):
 
     unet_config = {
         "model_channels": 320,
+        "out_channels": 4,
         "use_linear_in_transformer": True,
         "transformer_depth": [0, 0, 2, 2, 10, 10],
         "context_dim": 2048,
@@ -188,6 +198,9 @@ class SDXL(BASE):
 
     latent_format = latent.SDXL
     memory_usage_factor = 0.8
+
+    def inpaint_model(self):
+        return self.unet_config.get("in_channels", -1) > 4
 
     def model_type(self, state_dict: dict):
         if "v_pred" in state_dict:
@@ -223,6 +236,26 @@ class SDXL(BASE):
 
     def clip_target(self, state_dict: dict):
         return {"clip_l": "text_encoder", "clip_g": "text_encoder_2"}
+
+
+class Mugen(SDXL):
+    huggingface_repo = "CabalResearch/Mugen"
+
+    unet_config = dict(SDXL.unet_config, out_channels=32)
+
+    sampling_settings = {
+        "shift": 12.0,
+    }
+
+    latent_format = latent.SDXL_Flux2
+
+    vae_key_prefix = ["vae.", "first_stage_model."]
+
+    def inpaint_model(self):
+        return False
+
+    def model_type(self, state_dict):
+        return ModelType.FLOW
 
 
 class Flux(BASE):
@@ -304,6 +337,9 @@ class Flux2K4B(Flux):
     vae_key_prefix = ["vae."]
     text_encoder_key_prefix = ["text_encoders."]
 
+    def model_type(self, state_dict):
+        return ModelType.FLOW
+
     def clip_target(self, state_dict={}):
         return {"qwen3_4b.transformer": "text_encoder"}
 
@@ -329,6 +365,9 @@ class Flux2K9B(Flux):
 
     vae_key_prefix = ["vae."]
     text_encoder_key_prefix = ["text_encoders."]
+
+    def model_type(self, state_dict):
+        return ModelType.FLOW
 
     def clip_target(self, state_dict={}):
         return {"qwen3_8b.transformer": "text_encoder"}
@@ -387,9 +426,6 @@ class Lumina2(BASE):
     text_encoder_key_prefix = ["text_encoders."]
 
     unet_target = "transformer"
-
-    def model_type(self, state_dict):
-        return ModelType.FLOW
 
     def clip_target(self, state_dict: dict):
         pref = self.text_encoder_key_prefix[0]
@@ -456,9 +492,6 @@ class WAN21_T2V(BASE):
         super().__init__(unet_config)
         self.memory_usage_factor = self.unet_config.get("dim", 2000) / 2000
 
-    def model_type(self, state_dict):
-        return ModelType.FLOW
-
     def clip_target(self, state_dict: dict):
         return {"umt5xxl": "text_encoder"}
 
@@ -497,9 +530,6 @@ class QwenImage(BASE):
 
     unet_target = "transformer"
 
-    def model_type(self, state_dict):
-        return ModelType.FLOW
-
     def clip_target(self, state_dict: dict):
         pref = self.text_encoder_key_prefix[0]
         if "{}.qwen25_7b.transformer.model.embed_tokens.weight".format(pref) in state_dict:
@@ -509,9 +539,38 @@ class QwenImage(BASE):
             return {"qwen25_7b": "text_encoder"}
 
 
+class ErnieImage(BASE):
+    huggingface_repo = "baidu/ERNIE-Image"
+
+    unet_config = {
+        "image_model": "ernie",
+    }
+
+    sampling_settings = {
+        "multiplier": 1000.0,
+        "shift": 3.0,
+    }
+
+    memory_usage_factor = 10.0
+
+    unet_extra_config = {}
+    latent_format = latent.Flux2
+
+    supported_inference_dtypes = [torch.bfloat16, torch.float32]
+
+    vae_key_prefix = ["vae."]
+    text_encoder_key_prefix = ["text_encoders."]
+
+    unet_target = "transformer"
+
+    def clip_target(self, state_dict={}):
+        return {"ministral3_3b.transformer": "text_encoder"}
+
+
 models = [
     SD15,
     SDXL,
+    Mugen,
     SDXLRefiner,
     Flux,
     FluxSchnell,
@@ -523,4 +582,5 @@ models = [
     WAN21_T2V,
     WAN21_I2V,
     QwenImage,
+    ErnieImage,
 ]

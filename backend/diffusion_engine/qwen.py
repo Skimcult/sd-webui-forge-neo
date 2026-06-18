@@ -23,12 +23,10 @@ class QwenImage(ForgeDiffusionEngine):
 
     def __init__(self, estimated_config, huggingface_components):
         super().__init__(estimated_config, huggingface_components)
-        self.is_inpaint = False
 
         clip = CLIP(model_dict={"qwen25_7b": huggingface_components["text_encoder"]}, tokenizer_dict={"qwen25_7b": huggingface_components["tokenizer"]})
 
         vae = VAE(model=huggingface_components["vae"], is_wan=True)
-        vae.first_stage_model.latent_format = self.model_config.latent_format
 
         k_predictor = PredictionDiscreteFlow(estimated_config)
 
@@ -58,7 +56,7 @@ class QwenImage(ForgeDiffusionEngine):
             if _references:
                 return self.get_learned_conditioning_with_image(prompt, _references)
             else:
-                dynamic_args["ref_latents"].clear()
+                dynamic_args.ref_latents.clear()
 
         return self.text_processing_engine_qwen(prompt)
 
@@ -71,7 +69,7 @@ class QwenImage(ForgeDiffusionEngine):
             ref_latents.append(r)
             image_prompts.append(p)
 
-        dynamic_args["ref_latents"] = ref_latents.copy()
+        dynamic_args.ref_latents = ref_latents.copy()
         return self.text_processing_engine_qwen(["\n".join([*image_prompts, *prompt])], images=images_vl)
 
     @torch.inference_mode()
@@ -116,8 +114,8 @@ class QwenImage(ForgeDiffusionEngine):
         sample = self.forge_objects.vae.encode(start_image)
         sample = self.forge_objects.vae.first_stage_model.process_in(sample)
 
-        if dynamic_args["edit"]:
-            if dynamic_args["is_referencing"]:
+        if dynamic_args.edit:
+            if dynamic_args.is_referencing:
                 self.ref_latents.append(start_image.cpu())
             else:
                 self.ini_latent = start_image.cpu()

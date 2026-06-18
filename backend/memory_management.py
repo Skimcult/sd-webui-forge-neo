@@ -36,6 +36,7 @@ import torch
 
 from backend.args import args
 from backend.logging import setup_logger
+from backend.quant_ops import QuantizedTensor
 
 if TYPE_CHECKING:
     from backend.patcher.base import ModelPatcher
@@ -202,6 +203,17 @@ except Exception:
     pass
 
 OOM_EXCEPTION = getattr(torch, "OutOfMemoryError", Exception)
+ACCELERATOR_ERROR = getattr(torch, "AcceleratorError", RuntimeError)
+
+
+def is_oom(e: Exception) -> bool:
+    if isinstance(e, OOM_EXCEPTION):
+        return True
+    if isinstance(e, ACCELERATOR_ERROR) or "out of memory" in str(e).lower():
+        discard_cuda_async_error()
+        return True
+    return False
+
 
 if args.disable_xformers:
     XFORMERS_IS_AVAILABLE = False
@@ -442,6 +454,7 @@ class LoadedModel:
         if model.parent is not None:
             self._parent_model = weakref.ref(model.parent)
             self._patcher_finalizer = weakref.finalize(model, self._switch_parent)
+            self._patcher_finalizer.atexit = False
 
     def _switch_parent(self):
         model = self._parent_model()
@@ -488,10 +501,9 @@ class LoadedModel:
 
         bake_gguf_model(real_model)
 
-        self.model.refresh_loras()
-
         self.real_model = weakref.ref(real_model)
         self.model_finalizer = weakref.finalize(real_model, cleanup_models)
+        self.model_finalizer.atexit = False
         return real_model
 
     def should_reload_model(self, force_patch_weights=False):
@@ -701,8 +713,8 @@ def load_models_gpu(models: list["ModelPatcher"], memory_required: float = 0, fo
         loaded_model.model_load(lowvram_model_memory, force_patch_weights=force_patch_weights)
         current_loaded_models.insert(0, loaded_model)
 
-    moving_time = time.perf_counter() - execution_start_time
-    logger.info(f"Moving model(s) has taken {moving_time:.2f} seconds")
+    if (moving_time := time.perf_counter() - execution_start_time) > 0.1:
+        logger.info(f"Moving model(s) has taken {moving_time:.2f} seconds")
 
 
 def load_model_gpu(model: "ModelPatcher"):
@@ -840,7 +852,7 @@ def unet_dtype(device: torch.device = None, model_params: int = 0, supported_dty
     return torch.float32
 
 
-def inference_cast(weight_dtype: torch.device, inference_device: torch.device, supported_dtypes: list[torch.dtype] = [torch.float16, torch.bfloat16, torch.float32]) -> torch.dtype:
+def inference_cast(weight_dtype: torch.dtype, inference_device: torch.device, supported_dtypes: list[torch.dtype] = [torch.float16, torch.bfloat16, torch.float32]) -> torch.dtype:
     if weight_dtype == torch.float32:
         return weight_dtype
 
@@ -1003,14 +1015,18 @@ def device_supports_non_blocking(device: torch.device) -> bool:
     return True
 
 
-def cast_to(weight: torch.Tensor, dtype: torch.dtype = None, device: torch.device = None, non_blocking: bool = False, copy: bool = False, context=nullcontext()):
+def cast_to(weight: torch.nn.Parameter, dtype: torch.dtype = None, device: torch.device = None, non_blocking: bool = False, copy: bool = False, *, context=None):
     if device is None or weight.device == device:
         if not copy and (dtype is None or weight.dtype == dtype):
             return weight
-        with context:
+        with context or nullcontext():
             return weight.to(dtype=dtype, copy=copy)
 
-    with context:
+    if type(weight) not in (torch.Tensor, torch.nn.Parameter, QuantizedTensor):  # GGUF / BnB
+        with context or nullcontext():
+            return weight.to(dtype=dtype, device=device, non_blocking=non_blocking, copy=copy)
+
+    with context or nullcontext():
         r = torch.empty_like(weight, dtype=dtype, device=device)
         r.copy_(weight, non_blocking=non_blocking)
         return r
@@ -1173,10 +1189,7 @@ def should_use_fp16(device: torch.device = None, model_params: int = 0, prioriti
         return False
 
     if is_intel_xpu():
-        if torch_version_numeric < (2, 3):
-            return True
-        else:
-            return torch.xpu.get_device_properties(device).has_fp16
+        return torch.xpu.get_device_properties(device).has_fp16
 
     if torch.version.hip:
         return True
@@ -1231,10 +1244,7 @@ def should_use_bf16(device: torch.device = None, model_params: int = 0, prioriti
         return False
 
     if is_intel_xpu():
-        if torch_version_numeric < (2, 3):
-            return True
-        else:
-            return torch.xpu.is_bf16_supported()
+        return torch.xpu.is_bf16_supported()
 
     if is_amd():
         arch = torch.cuda.get_device_properties(device).gcnArchName
@@ -1273,12 +1283,50 @@ def supports_fp8_compute(device: torch.device = None) -> bool:
     if props.minor < 9:
         return False
 
+    if torch_version_numeric < (2, 3):
+        return False
+
     if WINDOWS:
         if torch_version_numeric < (2, 4):
             return False
-    else:
-        if torch_version_numeric < (2, 3):
-            return False
+
+    return True
+
+
+def supports_nvfp4_compute(device: torch.device = None) -> bool:
+    if not is_nvidia():
+        return False
+
+    props = torch.cuda.get_device_properties(device)
+    if props.major < 10:
+        return False
+
+    return True
+
+
+def supports_mxfp8_compute(device: torch.device = None) -> bool:
+    if not is_nvidia():
+        return False
+
+    if torch_version_numeric < (2, 10):
+        return False
+
+    props = torch.cuda.get_device_properties(device)
+    if props.major < 10:
+        return False
+
+    return True
+
+
+def supports_fp64(device: torch.device = None) -> bool:
+    if is_device_mps(device):
+        return False
+
+    if is_intel_xpu():
+        return False
+
+    if is_directml_enabled():
+        return False
 
     return True
 
@@ -1311,13 +1359,13 @@ def soft_empty_cache(force=False):
         if cpu_state is CPUState.MPS:
             torch.mps.empty_cache()
         elif is_intel_xpu():
+            torch.xpu.synchronize()
             torch.xpu.empty_cache()
         elif torch.cuda.is_available():
+            torch.cuda.synchronize()
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
     except RuntimeError as e:
-        # If the XPU runtime has already lost the device, cache eviction will fail too.
-        # Keep the original failure visible instead of crashing again in cleanup.
         if is_intel_xpu() and "UR_RESULT_ERROR_DEVICE_LOST" in str(e):
             logger.warning("Skipping XPU cache eviction after device loss: %s", e)
         else:

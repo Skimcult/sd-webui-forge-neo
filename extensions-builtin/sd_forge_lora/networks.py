@@ -29,7 +29,7 @@ def load_lora_for_models(model: "UnetPatcher", clip: "CLIP", lora: dict[str, tor
         logger.warning(f"[LORA] Empty LoRA state dict: {filename}")
         return model, clip
 
-    if dynamic_args.get("nunchaku", False):
+    if dynamic_args.nunchaku:
         model.model.diffusion_model.loras.append((filename, strength_model))
         return model, clip
 
@@ -118,9 +118,9 @@ def load_networks(names: list[str], te_multipliers: list[float] = None, unet_mul
             logger.error(f'Failed to load LoRA: "{name}"')
             continue
 
-    online_mode = dynamic_args.get("online_lora", False)
+    online_mode = dynamic_args.online_lora or False
 
-    if current_sd.forge_objects.unet.model.storage_dtype is torch.float8_e4m3fn and dynamic_args.get("ops", "").startswith("fp8"):
+    if dynamic_args.ops.startswith("Mixed") or dynamic_args.ops.endswith("FP8"):
         online_mode = False
 
     compiled_lora_targets = []
@@ -137,7 +137,7 @@ def load_networks(names: list[str], te_multipliers: list[float] = None, unet_mul
     current_sd.forge_objects.unet = current_sd.forge_objects_original.unet
     current_sd.forge_objects.clip = current_sd.forge_objects_original.clip
 
-    if dynamic_args.get("nunchaku", False):
+    if dynamic_args.nunchaku:
         current_sd.forge_objects.unet.model.diffusion_model.loras.clear()
 
     for filename, strength_model, strength_clip, online_mode in compiled_lora_targets:

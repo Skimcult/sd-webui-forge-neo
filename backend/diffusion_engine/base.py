@@ -1,3 +1,4 @@
+from abc import abstractmethod
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -6,6 +7,7 @@ if TYPE_CHECKING:
     from backend.patcher.clip import CLIP
     from backend.patcher.unet import UnetPatcher
     from backend.patcher.vae import VAE
+    from modules_forge.packages.huggingface_guess.model_list import BASE
 
 from backend import memory_management, utils
 
@@ -24,9 +26,11 @@ class ForgeObjects:
 class ForgeDiffusionEngine:
     matched_guesses = []
 
-    def __init__(self, estimated_config, huggingface_components):
-        self.model_config = estimated_config
-        self.is_inpaint = estimated_config.inpaint_model()
+    def __init__(self, estimated_config: "BASE", huggingface_components: dict[str, "torch.nn.Module"]):
+        huggingface_components["vae"].latent_format = estimated_config.latent_format
+
+        self.model_config: "BASE" = estimated_config
+        self.is_inpaint: bool = estimated_config.inpaint_model()
 
         self.forge_objects: "ForgeObjects" = None
         self.forge_objects_original: "ForgeObjects" = None
@@ -45,12 +49,15 @@ class ForgeDiffusionEngine:
     def get_first_stage_encoding(self, x):
         return x
 
+    @abstractmethod
     def get_learned_conditioning(self, prompt: list[str]):
         raise NotImplementedError
 
+    @abstractmethod
     def encode_first_stage(self, x):
         raise NotImplementedError
 
+    @abstractmethod
     def decode_first_stage(self, x):
         raise NotImplementedError
 
@@ -66,7 +73,6 @@ class ForgeDiffusionEngine:
         self.use_shift = False
         self.is_sd1 = False
         self.is_sdxl = False
-        self.is_flux = False  # affects the usage of TAESD
         self.is_wan = False  # affects the usage of WanVAE (B, C, T, H, W)
 
     @property
@@ -87,6 +93,12 @@ class ForgeDiffusionEngine:
         # called by ImageStitch
         self.ref_latents.clear()
         memory_management.soft_empty_cache()
+
+    def set_shift(self, shift: float):
+        if not self.use_shift:
+            return
+        self.forge_objects.unet.model.predictor.set_parameters(shift=shift)
+        memory_management.logger.debug(f"Shift: {shift}")
 
     def save_unet(self, filename):
         import safetensors.torch as sf

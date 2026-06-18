@@ -23,12 +23,21 @@ class StableDiffusionXL(ForgeDiffusionEngine):
 
         vae = VAE(model=huggingface_components["vae"])
 
-        unet = UnetPatcher.from_model(model=huggingface_components["unet"], diffusers_scheduler=huggingface_components["scheduler"], config=estimated_config)
+        if estimated_config.sampling_settings.pop("RF", False):
+            memory_management.logger.info("Using Rectified-Flow Predictor...")
+            from backend.modules.k_prediction import PredictionDiscreteFlow
+
+            k_predictor = PredictionDiscreteFlow(estimated_config)
+            unet = UnetPatcher.from_model(model=huggingface_components["unet"], diffusers_scheduler=None, k_predictor=k_predictor, config=estimated_config)
+            self.use_shift = True
+        else:
+            unet = UnetPatcher.from_model(model=huggingface_components["unet"], diffusers_scheduler=huggingface_components["scheduler"], config=estimated_config)
+            self.use_shift = False
 
         self.text_processing_engine_l = ClassicTextProcessingEngine(
             text_encoder=clip.cond_stage_model.clip_l,
             tokenizer=clip.tokenizer.clip_l,
-            embedding_dir=dynamic_args["embedding_dir"],
+            embedding_dir=dynamic_args.embedding_dir,
             embedding_key="clip_l",
             embedding_expected_shape=2048,
             text_projection=False,
@@ -41,7 +50,7 @@ class StableDiffusionXL(ForgeDiffusionEngine):
         self.text_processing_engine_g = ClassicTextProcessingEngine(
             text_encoder=clip.cond_stage_model.clip_g,
             tokenizer=clip.tokenizer.clip_g,
-            embedding_dir=dynamic_args["embedding_dir"],
+            embedding_dir=dynamic_args.embedding_dir,
             embedding_key="clip_g",
             embedding_expected_shape=2048,
             text_projection=True,
@@ -146,7 +155,7 @@ class StableDiffusionXLRefiner(ForgeDiffusionEngine):
         self.text_processing_engine_g = ClassicTextProcessingEngine(
             text_encoder=clip.cond_stage_model.clip_g,
             tokenizer=clip.tokenizer.clip_g,
-            embedding_dir=dynamic_args["embedding_dir"],
+            embedding_dir=dynamic_args.embedding_dir,
             embedding_key="clip_g",
             embedding_expected_shape=2048,
             text_projection=True,

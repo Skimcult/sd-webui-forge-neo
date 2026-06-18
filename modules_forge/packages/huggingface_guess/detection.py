@@ -37,10 +37,10 @@ def calculate_transformer_depth(prefix, state_dict_keys, state_dict):
     return None
 
 
-def detect_unet_config(state_dict: dict, key_prefix: str):
+def detect_unet_config(state_dict: dict, key_prefix: str) -> dict:
     state_dict_keys = list(state_dict.keys())
 
-    if "{}cap_embedder.1.weight".format(key_prefix) in state_dict_keys:  # Lumina 2
+    if "{}cap_embedder.1.weight".format(key_prefix) in state_dict_keys and ("{}noise_refiner.0.attention.k_norm.weight".format(key_prefix) in state_dict_keys or "{}layers.0.attention.to_out.0.qweight".format(key_prefix) in state_dict_keys):  # Lumina 2
         dit_config = {}
         dit_config["image_model"] = "lumina2"
         dit_config["patch_size"] = 2
@@ -58,9 +58,6 @@ def detect_unet_config(state_dict: dict, key_prefix: str):
             dit_config["axes_lens"] = [300, 512, 512]
             dit_config["rope_theta"] = 10000.0
             dit_config["ffn_dim_multiplier"] = 4.0
-            ctd_weight = state_dict.get("{}clip_text_pooled_proj.0.weight".format(key_prefix), None)
-            if ctd_weight is not None:  # NewBie
-                dit_config["clip_text_dim"] = int(ctd_weight.shape[0])
         elif dit_config["dim"] == 3840:  # Z-image
             dit_config["nunchaku"] = "{}layers.0.attention.to_out.0.qweight".format(key_prefix) in state_dict_keys
             dit_config["n_heads"] = 30
@@ -109,7 +106,7 @@ def detect_unet_config(state_dict: dict, key_prefix: str):
     if "{}single_transformer_blocks.0.mlp_fc1.qweight".format(key_prefix) in state_dict_keys:  # SVDQ Flux
         dit_config = {"nunchaku": True}
         dit_config["image_model"] = "flux"
-        dit_config["guidance_embed"] = True
+        dit_config["guidance_embed"] = "{}time_text_embed.guidance_embedder.linear_1.weight".format(key_prefix) in state_dict_keys
         return dit_config
 
     if "{}double_blocks.0.img_attn.proj.weight.quant_state.bitsandbytes__nf4".format(key_prefix) in state_dict_keys:  # flux1-dev-bnb-nf4
@@ -128,10 +125,10 @@ def detect_unet_config(state_dict: dict, key_prefix: str):
         dit_config["theta"] = 10000
         dit_config["patch_size"] = 2
         dit_config["qkv_bias"] = True
-        dit_config["guidance_embed"] = True
+        dit_config["guidance_embed"] = "{}guidance_in.in_layer.weight".format(key_prefix) in state_dict_keys
         return dit_config
 
-    if "{}double_blocks.0.img_attn.norm.key_norm.scale".format(key_prefix) in state_dict_keys and ("{}img_in.weight".format(key_prefix) in state_dict_keys or f"{key_prefix}distilled_guidance_layer.norms.0.scale" in state_dict_keys):  # Flux.1 / Flux.2
+    if ("{}double_blocks.0.img_attn.norm.key_norm.scale".format(key_prefix) in state_dict_keys or "{}double_blocks.0.img_attn.norm.key_norm.weight".format(key_prefix) in state_dict_keys) and ("{}img_in.weight".format(key_prefix) in state_dict_keys or f"{key_prefix}distilled_guidance_layer.norms.0.scale" in state_dict_keys):  # Flux.1 / Flux.2
         dit_config = {}
         if "{}double_stream_modulation_img.lin.weight".format(key_prefix) in state_dict_keys:
             dit_config["image_model"] = "flux2"
@@ -201,12 +198,38 @@ def detect_unet_config(state_dict: dict, key_prefix: str):
 
         return dit_config
 
+    if "{}blocks.0.mlp.layer1.weight".format(key_prefix) in state_dict_keys:  # Anima
+        dit_config = {}
+        assert "{}llm_adapter.blocks.0.cross_attn.q_proj.weight".format(key_prefix) in state_dict_keys
+        dit_config["image_model"] = "anima"
+        dit_config["in_channels"] = int(state_dict["{}x_embedder.proj.1.weight".format(key_prefix)].shape[1] / 4) - 1
+        assert dit_config["in_channels"] == 16
+        dit_config["out_channels"] = 16
+        dit_config["patch_spatial"] = 2
+        dit_config["patch_temporal"] = 1
+        dit_config["model_channels"] = int(state_dict["{}x_embedder.proj.1.weight".format(key_prefix)].shape[0])
+        assert dit_config["model_channels"] == 2048
+        dit_config["concat_padding_mask"] = True
+        dit_config["crossattn_emb_channels"] = 1024
+        dit_config["adaln_lora_dim"] = 256
+        dit_config["num_blocks"] = 28
+        dit_config["num_heads"] = 16
+        dit_config["rope_h_extrapolation_ratio"] = 4.0
+        dit_config["rope_w_extrapolation_ratio"] = 4.0
+        dit_config["rope_t_extrapolation_ratio"] = 1.0
+
+        return dit_config
+
     if "{}txt_norm.weight".format(key_prefix) in state_dict_keys:  # Qwen Image
         _qweight: bool = "{}transformer_blocks.0.attn.to_qkv.qweight".format(key_prefix) in state_dict_keys
         dit_config = {"nunchaku": _qweight}
         dit_config["image_model"] = "qwen_image"
         dit_config["in_channels"] = int(state_dict["{}img_in.weight".format(key_prefix)].shape[1])
         dit_config["num_layers"] = count_blocks(state_dict_keys, "{}transformer_blocks.".format(key_prefix) + "{}.")
+        return dit_config
+
+    if "{}layers.0.mlp.linear_fc2.weight".format(key_prefix) in state_dict_keys:  # Ernie Image
+        dit_config = {"image_model": "ernie"}
         return dit_config
 
     if "{}input_blocks.0.0.weight".format(key_prefix) not in state_dict_keys:
@@ -355,24 +378,15 @@ def top_candidate(state_dict, candidates):
     return top, counts[top]
 
 
-def unet_prefix_from_state_dict(state_dict):
-    candidates = [
+def unet_prefix_from_state_dict(state_dict: dict) -> str:
+    candidates = (
         "model.diffusion_model.",  # ldm/sgm models
-        "model.model.",  # audio models
         "net.",  # cosmos
-    ]
-    counts = {k: 0 for k in candidates}
-    for k in state_dict:
-        for c in candidates:
-            if k.startswith(c):
-                counts[c] += 1
-                break
-
-    top = max(counts, key=counts.get)
-    if counts[top] > 5:
-        return top
-    else:
-        return "model."  # etc.
+    )
+    for prefix in candidates:
+        if sum(1 for k in state_dict if k.startswith(prefix)) > 5:
+            return prefix
+    return "model."  # etc.
 
 
 def convert_config(unet_config):
