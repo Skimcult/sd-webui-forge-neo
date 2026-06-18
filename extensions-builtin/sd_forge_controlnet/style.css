@@ -14,11 +14,11 @@
 .cnet-modal-content {
     position: relative;
     background-color: var(--background-fill-primary);
-    margin: 5vh auto;
+    margin: 2vh auto;
     padding: 20px;
     border: 1px solid #888;
-    width: 95%;
-    height: 90vh;
+    width: 97%;
+    height: 96vh;
     box-shadow: 0 4px 8px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(0, 0, 0, 0.19);
     animation-name: animatetop;
     animation-duration: 0.4s;

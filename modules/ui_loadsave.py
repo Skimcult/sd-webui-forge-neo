@@ -1,5 +1,7 @@
 import json
 import os
+import shutil
+import tempfile
 
 import gradio as gr
 
@@ -13,12 +15,70 @@ def radio_choices(comp):  # gradio 3.41 changes choices from list of values to l
 
 def read_ui_settings_file(filename):
     with open(filename, "r", encoding="utf8") as file:
-        return json.load(file)
+        raw = file.read()
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as first_err:
+        if "Extra data" not in str(first_err):
+            raise
+
+        # File contains valid JSON followed by trailing garbage (interrupted write).
+        # Use raw_decode to parse only the first complete JSON object.
+        decoder = json.JSONDecoder()
+        result, _ = decoder.raw_decode(raw)
+        if not isinstance(result, dict):
+            raise
+
+        # Rewrite the file cleanly so the corruption doesn't persist.
+        write_ui_settings_file(filename, result)
+        return result
 
 
 def write_ui_settings_file(filename, current_ui_settings):
-    with open(filename, "w", encoding="utf8") as file:
-        json.dump(current_ui_settings, file, indent=4, ensure_ascii=False)
+    # Atomic write: serialize to a temp file in the same directory, then
+    # rename over the target.  This prevents corruption from interrupted
+    # writes (crash / power loss) because the OS rename is atomic on the
+    # same filesystem.
+    target_dir = os.path.dirname(os.path.abspath(filename))
+    tmp_path = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(suffix=".tmp", prefix="ui_cfg_", dir=target_dir)
+        with os.fdopen(fd, "w", encoding="utf8") as tmp_file:
+            json.dump(current_ui_settings, tmp_file, indent=4, ensure_ascii=False)
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+        # Keep one backup of the previous version for manual recovery.
+        if os.path.exists(filename):
+            backup = filename + ".bak"
+            try:
+                shutil.copy2(filename, backup)
+            except OSError:
+                pass
+        # On Windows, os.replace can fail with PermissionError when another
+        # process (antivirus, concurrent callback) briefly locks the target.
+        # Retry a few times before giving up.
+        last_err = None
+        for attempt in range(5):
+            try:
+                os.replace(tmp_path, filename)
+                tmp_path = None  # replace succeeded, nothing to clean up
+                break
+            except PermissionError as e:
+                last_err = e
+                if attempt < 4:
+                    import time
+                    time.sleep(0.05 * (attempt + 1))
+        else:
+            raise last_err
+    except BaseException:
+        # Clean up the temp file if anything went wrong before the rename.
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        raise
 
 
 def update_ui_settings_file(filename, updates):

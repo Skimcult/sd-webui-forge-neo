@@ -343,8 +343,9 @@ class StableDiffusionProcessing:
         # Create the concatenated conditioning tensor to be fed to `c_concat`
         conditioning_mask = torch.nn.functional.interpolate(conditioning_mask, size=latent_image.shape[-2:])
         conditioning_mask = conditioning_mask.expand(conditioning_image.shape[0], -1, -1, -1)
+        conditioning_mask = conditioning_mask.to(dtype=conditioning_image.dtype)
         image_conditioning = torch.cat([conditioning_mask, conditioning_image], dim=1)
-        # image_conditioning = image_conditioning.to(shared.device).type(self.sd_model.dtype)
+        image_conditioning = image_conditioning.to(device=shared.device, dtype=latent_image.dtype)
 
         return image_conditioning
 

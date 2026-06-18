@@ -220,10 +220,12 @@ class ControlNetUiGroup:
         Returns:
             None
         """
+        independent_img2img_default = self.is_img2img
+
         self.dummy_gradio_update_trigger = gr.Number(value=0, visible=False)
         self.openpose_editor = OpenposeEditor()
 
-        with gr.Group(visible=not self.is_img2img) as self.image_upload_panel:
+        with gr.Group(visible=(not self.is_img2img) or independent_img2img_default) as self.image_upload_panel:
             self.save_detected_map = gr.Checkbox(value=True, visible=False)
 
             with gr.Row(elem_classes=["cnet-image-row"], equal_height=True):
@@ -315,10 +317,10 @@ class ControlNetUiGroup:
             )
             self.preprocessor_preview = gr.Checkbox(
                 label="Allow Preview",
-                value=False,
+                value=True,
                 elem_classes=["cnet-allow-preview"],
                 elem_id=preview_check_elem_id,
-                visible=not self.is_img2img,
+                visible=(not self.is_img2img) or independent_img2img_default,
             )
             self.mask_upload = gr.Checkbox(
                 label="Use Mask",
@@ -338,7 +340,7 @@ class ControlNetUiGroup:
             if self.is_img2img:
                 self.upload_independent_img_in_img2img = gr.Checkbox(
                     label="Upload independent control image",
-                    value=False,
+                    value=independent_img2img_default,
                     elem_id=f"{elem_id_tabname}_{tabname}_controlnet_same_img2img_checkbox",
                     elem_classes=["cnet-unit-same_img2img"],
                 )
@@ -363,7 +365,7 @@ class ControlNetUiGroup:
             )
             self.trigger_preprocessor = ToolButton(
                 value=ControlNetUiGroup.trigger_symbol,
-                visible=not self.is_img2img,
+                visible=(not self.is_img2img) or independent_img2img_default,
                 elem_id=f"{elem_id_tabname}_{tabname}_controlnet_trigger_preprocessor",
                 elem_classes=["cnet-run-preprocessor", "cnet-toolbutton"],
                 tooltip=ControlNetUiGroup.tooltips[ControlNetUiGroup.trigger_symbol],
@@ -448,7 +450,7 @@ class ControlNetUiGroup:
             label="Resize Mode",
             elem_id=f"{elem_id_tabname}_{tabname}_controlnet_resize_mode_radio",
             elem_classes="controlnet_resize_mode_radio",
-            visible=not self.is_img2img,
+            visible=(not self.is_img2img) or independent_img2img_default,
         )
 
         self.hr_option = gr.Radio(

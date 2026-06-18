@@ -75,9 +75,13 @@ def webui_worker():
         shared,
         ui,
         ui_extra_networks,
-        ui_rewrite,
         ui_tempdir,
     )
+
+    try:
+        from modules import ui_rewrite
+    except ImportError:
+        ui_rewrite = None
 
     while 1:
         if shared.opts.clean_temp_dir_at_start:
@@ -132,7 +136,8 @@ def webui_worker():
 
         progress.setup_progress_api(app)
         ui.setup_ui_api(app)
-        ui_rewrite.setup_ui_rewrite(app)
+        if ui_rewrite is not None:
+            ui_rewrite.setup_ui_rewrite(app)
 
         if launch_api:
             create_api(app)

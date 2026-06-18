@@ -295,6 +295,7 @@ def parse_generation_parameters(x: str, skip_fields: list[str] | None = None):
     if "Civitai" in lastline and "FLUX" in lastline:
         lastline = lastline.replace("Sampler: Undefined,", "Sampler: Euler, Schedule type: Simple,")
         lastline = lastline.replace("CFG scale: ", "CFG scale: 1, Distilled CFG Scale: ")
+    lastline = lastline.replace(", width:", ", Size-1:").replace(", height:", ", Size-2:")
 
     for k, v in re_param.findall(lastline):
         if k == "Noise Schedule":
@@ -372,7 +373,7 @@ def parse_generation_parameters(x: str, skip_fields: list[str] | None = None):
         res["RNG"] = "GPU"
 
     if "Schedule type" not in res:
-        res["Schedule type"] = "Automatic"
+        res["Schedule type"] = "Simple"
 
     if "Schedule max sigma" not in res:
         res["Schedule max sigma"] = 0

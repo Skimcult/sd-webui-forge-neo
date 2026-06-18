@@ -419,6 +419,8 @@ options_templates.update(
             "open_dir_button_choice": OptionInfo("Subdirectory", "What directory the [📂] button opens", gr.Radio, {"choices": ("Output Root", "Subdirectory", "Subdirectory (even temp dir)")}),
             "hires_button_gallery_insert": OptionInfo(False, "When using the [✨] button, insert the upscaled image to the gallery").info("otherwise replace the selected image in the gallery"),
             "hires_insert_index": OptionInfo(True, "When the above option is enabled, automatically select the upscaled image").info("otherwise select the original image"),
+            "txt2img_upscale_single_batch": OptionInfo(True, "When using the [✨] button, lock the Batch Count and Batch Size to 1 regardless of the UI values"),
+            "txt2img_upscale_same_seed": OptionInfo(True, "When using the [✨] button, pass the Seed of the input image instead of the UI value"),
         },
     )
 )

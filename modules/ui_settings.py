@@ -12,6 +12,12 @@ from modules.ui_gradio_extensions import reload_javascript
 from modules_forge import main_entry
 
 CURRENT_ROW: gr.Row = None
+LOCALIZED_UI_SETTINGS = {
+    "img2img_color_correction",
+    "inpaint_color_correction",
+    "overlay_inpaint",
+    "use_karras_sigmas",
+}
 
 
 def get_value_for_setting(key):
@@ -152,7 +158,10 @@ class UiSettings:
             self.result = gr.HTML(elem_id="settings_result")
 
             self.quicksettings_names = opts.quicksettings_list
-            self.quicksettings_names = {x: i for i, x in enumerate(self.quicksettings_names) if x != "quicksettings"}
+            self.quicksettings_names = {
+                x: i for i, x in enumerate(self.quicksettings_names)
+                if x != "quicksettings" and x not in LOCALIZED_UI_SETTINGS
+            }
 
             self.quicksettings_list = []
 

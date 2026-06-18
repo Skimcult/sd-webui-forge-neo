@@ -17,6 +17,7 @@ from modules import (
     shared,
     shared_items,
     ui_common,
+    ui_loadsave,
 )
 from modules_forge.presets import PresetArch, use_distill, use_shift
 
@@ -27,6 +28,60 @@ ui_forge_preset: gr.Radio
 ui_checkpoint: gr.Dropdown
 ui_vae: gr.Dropdown
 ui_forge_unet_dtype: gr.Radio
+
+session_preset_values: dict[str, dict[str, object]] = {}
+loaded_preset_values: set[str] = set()
+
+
+def _preset_ui_state_key(preset: str, key: str):
+    return f"forge-last-used/{preset}/{key}"
+
+
+def _load_preset_ui_state(preset: str | None):
+    if not preset or preset in loaded_preset_values:
+        return
+
+    ui_config_file = getattr(shared.cmd_opts, "ui_config_file", None)
+    loaded_preset_values.add(preset)
+    if not ui_config_file or not os.path.exists(ui_config_file):
+        return
+
+    try:
+        ui_settings = ui_loadsave.read_ui_settings_file(ui_config_file)
+    except Exception:
+        return
+
+    key_prefix = f"forge-last-used/{preset}/"
+    state = session_preset_values.setdefault(preset, {})
+    for key, value in ui_settings.items():
+        if key.startswith(key_prefix):
+            state.setdefault(key[len(key_prefix):], value)
+
+
+def remember_preset_ui_state(preset: str | None, **updates):
+    if not preset:
+        return
+
+    state = session_preset_values.setdefault(preset, {})
+    for key, value in updates.items():
+        if value is not None:
+            state[key] = value
+
+    ui_config_file = getattr(shared.cmd_opts, "ui_config_file", None)
+    if ui_config_file:
+        ui_loadsave.update_ui_settings_file(
+            ui_config_file,
+            {
+                _preset_ui_state_key(preset, key): value
+                for key, value in updates.items()
+                if value is not None
+            },
+        )
+
+
+def get_preset_ui_state_value(preset: str, key: str, default):
+    _load_preset_ui_state(preset)
+    return session_preset_values.get(preset, {}).get(key, default)
 
 forge_unet_storage_dtype_options: dict[str, tuple[torch.dtype, bool]] = {
     "Automatic": (None, False),
@@ -163,6 +218,54 @@ def refresh_model_loading_parameters(*, refresh: bool = True):
     processing.need_global_unload = True
 
 
+def read_checkpoint_gen_params(ckpt_name: str) -> dict:
+    """Read gen_params from the .json file next to a checkpoint, if it exists."""
+    import json as _json
+    checkpoint_info = sd_models.get_closet_checkpoint_match(ckpt_name)
+    if checkpoint_info is None:
+        return {}
+    basename, _ = os.path.splitext(checkpoint_info.filename)
+    metadata_path = basename + ".json"
+    if not os.path.exists(metadata_path):
+        return {}
+    try:
+        with open(metadata_path, "r", encoding="utf8") as f:
+            data = _json.load(f)
+        return data.get("gen_params", {})
+    except Exception:
+        return {}
+
+
+def apply_checkpoint_gen_params(ckpt_name: str):
+    """Return gr.update/gr.skip for 14 gen-param UI targets (txt2img + img2img pairs)."""
+    params = read_checkpoint_gen_params(ckpt_name)
+
+    def num(key):
+        v = params.get(key)
+        return gr.update(value=v) if v else gr.skip()
+
+    def txt(key):
+        v = params.get(key, "")
+        return gr.update(value=v) if v else gr.skip()
+
+    return [
+        num("steps"),         # ui_txt2img_steps
+        num("steps"),         # ui_img2img_steps
+        txt("sampler"),       # ui_txt2img_sampler
+        txt("sampler"),       # ui_img2img_sampler
+        txt("scheduler"),     # ui_txt2img_scheduler
+        txt("scheduler"),     # ui_img2img_scheduler
+        num("cfg"),           # ui_txt2img_cfg
+        num("cfg"),           # ui_img2img_cfg
+        num("distilled_cfg"), # ui_txt2img_distilled_cfg
+        num("distilled_cfg"), # ui_img2img_distilled_cfg
+        num("width"),         # ui_txt2img_width
+        num("width"),         # ui_img2img_width
+        num("height"),        # ui_txt2img_height
+        num("height"),        # ui_img2img_height
+    ]
+
+
 def checkpoint_change(ckpt_name: str, preset: str, save=True, refresh=True) -> bool:
     """`ckpt_name` accepts valid aliases; returns `True` if checkpoint changed"""
     new_ckpt_info = sd_models.get_closet_checkpoint_match(ckpt_name)
@@ -235,6 +338,7 @@ def forge_main_entry():
 
     ui_txt2img_batch_size = get_a1111_ui_component("txt2img", "Batch size")
     ui_img2img_batch_size = get_a1111_ui_component("img2img", "Batch size")
+    ui_img2img_resize_mode = get_a1111_ui_component("img2img", "Resize mode")
 
     output_targets = [
         ui_checkpoint,
@@ -259,7 +363,24 @@ def forge_main_entry():
         ui_img2img_distilled_cfg,
         ui_txt2img_batch_size,
         ui_img2img_batch_size,
+        ui_img2img_resize_mode,
     ]
+
+    ui_checkpoint.input(
+        apply_checkpoint_gen_params,
+        inputs=[ui_checkpoint],
+        outputs=[
+            ui_txt2img_steps, ui_img2img_steps,
+            ui_txt2img_sampler, ui_img2img_sampler,
+            ui_txt2img_scheduler, ui_img2img_scheduler,
+            ui_txt2img_cfg, ui_img2img_cfg,
+            ui_txt2img_distilled_cfg, ui_img2img_distilled_cfg,
+            ui_txt2img_width, ui_img2img_width,
+            ui_txt2img_height, ui_img2img_height,
+        ],
+        queue=False,
+        show_progress="minimal",
+    )
 
     ui_forge_preset.change(on_preset_change, inputs=[ui_forge_preset], outputs=output_targets, queue=False, show_progress=False).success(
         fn=_load_presets,
@@ -297,28 +418,29 @@ def on_preset_change(preset: str):
         gr.update(value=[os.path.basename(m) for m in getattr(shared.opts, f"forge_additional_modules_{preset}", [])]),
         gr.update(value=getattr(shared.opts, "forge_unet_storage_dtype", "Automatic")),
         # ui_txt2img_steps, ui_txt2img_hr_steps, ui_img2img_steps
-        gr.update(value=v) if (v := getattr(shared.opts, f"{preset}_t2i_step", 20)) > 0 else gr.skip(),
-        gr.update(value=v) if (v := getattr(shared.opts, f"{preset}_t2i_hr_step", 20)) > 0 else gr.skip(),
-        gr.update(value=v) if (v := getattr(shared.opts, f"{preset}_i2i_step", 20)) > 0 else gr.skip(),
+        gr.update(value=v) if (v := get_preset_ui_state_value(preset, "t2i_step", getattr(shared.opts, f"{preset}_t2i_step", 20))) > 0 else gr.skip(),
+        gr.update(value=v) if (v := get_preset_ui_state_value(preset, "t2i_hr_step", getattr(shared.opts, f"{preset}_t2i_hr_step", 20))) > 0 else gr.skip(),
+        gr.update(value=v) if (v := get_preset_ui_state_value(preset, "i2i_step", getattr(shared.opts, f"{preset}_i2i_step", 20))) > 0 else gr.skip(),
         # ui_txt2img_sampler, ui_img2img_sampler, ui_txt2img_scheduler, ui_img2img_scheduler
-        gr.update(value=getattr(shared.opts, f"{preset}_t2i_sampler", "Euler")),
-        gr.update(value=getattr(shared.opts, f"{preset}_i2i_sampler", "Euler")),
-        gr.update(value=getattr(shared.opts, f"{preset}_t2i_scheduler", "Simple")),
-        gr.update(value=getattr(shared.opts, f"{preset}_i2i_scheduler", "Simple")),
+        gr.update(value=get_preset_ui_state_value(preset, "t2i_sampler", getattr(shared.opts, f"{preset}_t2i_sampler", "Euler"))),
+        gr.update(value=get_preset_ui_state_value(preset, "i2i_sampler", getattr(shared.opts, f"{preset}_i2i_sampler", "Euler"))),
+        gr.update(value=get_preset_ui_state_value(preset, "t2i_scheduler", getattr(shared.opts, f"{preset}_t2i_scheduler", "Simple"))),
+        gr.update(value=get_preset_ui_state_value(preset, "i2i_scheduler", getattr(shared.opts, f"{preset}_i2i_scheduler", "Simple"))),
         # ui_txt2img_width, ui_img2img_width, ui_txt2img_height, ui_img2img_height
-        gr.update(value=v) if (v := getattr(shared.opts, f"{preset}_t2i_width", 1024)) > 0 else gr.skip(),
-        gr.update(value=v) if (v := getattr(shared.opts, f"{preset}_i2i_width", 1024)) > 0 else gr.skip(),
-        gr.update(value=v) if (v := getattr(shared.opts, f"{preset}_t2i_height", 1024)) > 0 else gr.skip(),
-        gr.update(value=v) if (v := getattr(shared.opts, f"{preset}_i2i_height", 1024)) > 0 else gr.skip(),
+        gr.update(value=v) if (v := get_preset_ui_state_value(preset, "t2i_width", getattr(shared.opts, f"{preset}_t2i_width", 1024))) > 0 else gr.skip(),
+        gr.update(value=v) if (v := get_preset_ui_state_value(preset, "i2i_width", getattr(shared.opts, f"{preset}_i2i_width", 1024))) > 0 else gr.skip(),
+        gr.update(value=v) if (v := get_preset_ui_state_value(preset, "t2i_height", getattr(shared.opts, f"{preset}_t2i_height", 1024))) > 0 else gr.skip(),
+        gr.update(value=v) if (v := get_preset_ui_state_value(preset, "i2i_height", getattr(shared.opts, f"{preset}_i2i_height", 1024))) > 0 else gr.skip(),
         # ui_txt2img_cfg, ui_txt2img_hr_cfg, ui_img2img_cfg
-        gr.update(value=v) if (v := getattr(shared.opts, f"{preset}_t2i_cfg", 1.0)) > 0 else gr.skip(),
-        gr.update(value=v) if (v := getattr(shared.opts, f"{preset}_t2i_hr_cfg", 1.0)) > 0 else gr.skip(),
-        gr.update(value=v) if (v := getattr(shared.opts, f"{preset}_i2i_cfg", 1.0)) > 0 else gr.skip(),
+        gr.update(value=v) if (v := get_preset_ui_state_value(preset, "t2i_cfg", getattr(shared.opts, f"{preset}_t2i_cfg", 1.0))) > 0 else gr.skip(),
+        gr.update(value=v) if (v := get_preset_ui_state_value(preset, "t2i_hr_cfg", getattr(shared.opts, f"{preset}_t2i_hr_cfg", 1.0))) > 0 else gr.skip(),
+        gr.update(value=v) if (v := get_preset_ui_state_value(preset, "i2i_cfg", getattr(shared.opts, f"{preset}_i2i_cfg", 1.0))) > 0 else gr.skip(),
         # ui_txt2img_distilled_cfg, ui_img2img_distilled_cfg, ui_txt2img_hr_distilled_cfg
-        gr.update(value=getattr(shared.opts, f"{preset}_t2i_dcfg", 3.0), **d_args),
-        gr.update(value=getattr(shared.opts, f"{preset}_t2i_hr_dcfg", 3.0), **d_args),
-        gr.update(value=getattr(shared.opts, f"{preset}_i2i_dcfg", 3.0), **d_args),
+        gr.update(value=get_preset_ui_state_value(preset, "t2i_dcfg", getattr(shared.opts, f"{preset}_t2i_dcfg", 3.0)), **d_args),
+        gr.update(value=get_preset_ui_state_value(preset, "t2i_hr_dcfg", getattr(shared.opts, f"{preset}_t2i_hr_dcfg", 3.0)), **d_args),
+        gr.update(value=get_preset_ui_state_value(preset, "i2i_dcfg", getattr(shared.opts, f"{preset}_i2i_dcfg", 3.0)), **d_args),
         # ui_txt2img_batch_size, ui_img2img_batch_size
-        gr.update(**batch_args),
-        gr.update(**batch_args),
+        gr.update(value=get_preset_ui_state_value(preset, "t2i_batch_size", batch_args["value"]), minimum=batch_args["minimum"], maximum=batch_args["maximum"], step=batch_args["step"], label=batch_args["label"]),
+        gr.update(value=get_preset_ui_state_value(preset, "i2i_batch_size", batch_args["value"]), minimum=batch_args["minimum"], maximum=batch_args["maximum"], step=batch_args["step"], label=batch_args["label"]),
+        gr.update(value=get_preset_ui_state_value(preset, "i2i_resize_mode", 1)),
     ]

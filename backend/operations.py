@@ -391,7 +391,6 @@ from backend.operations_int8 import (
     dequantize,
     int8_forward_dynamic,
     quantize_int8_tensorwise,
-    stochastic_round_int8_delta,
 )
 
 
@@ -508,7 +507,10 @@ class ForgeOperationsInt8(ForgeOperations):
                 return
 
             # Re-quantize if fallback occurred
-            new_weight = stochastic_round_int8_delta(out_weight, self.weight_scale, seed)
+            w_scale = self.weight_scale
+            if isinstance(w_scale, torch.Tensor):
+                w_scale = w_scale.to(out_weight.device)
+            new_weight = (out_weight.float() / w_scale).round().clamp(-128, 127).to(torch.int8)
             if inplace_update:
                 self.weight.data.copy_(new_weight)
             else:

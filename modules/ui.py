@@ -170,66 +170,106 @@ def apply_setting(key, value):
     return getattr(opts, key)
 
 
-def persist_last_generation_ui_values(tabname, *, steps=None, sampler_name=None, scheduler=None, cfg_scale=None):
-    ui_config_file = getattr(cmd_opts, "ui_config_file", None)
+def bind_inline_setting(component, key):
+    component.change(
+        fn=lambda value, option_key=key: apply_setting(option_key, value),
+        inputs=[component],
+        outputs=[component],
+        queue=False,
+        show_progress=False,
+    )
 
-    if not ui_config_file:
+
+def persist_last_generation_ui_values(tabname, preset, *, steps=None, sampler_name=None, scheduler=None, cfg_scale=None, width=None, height=None, batch_size=None, distilled_cfg_scale=None, hr_steps=None, hr_cfg=None, hr_distilled_cfg=None, resize_mode=None):
+    if not preset:
         return
 
+    prefix = "t2i" if tabname == "txt2img" else "i2i"
     updates = {}
 
     if steps is not None:
-        updates[f"customscript/sampler.py/{tabname}/Sampling Steps/value"] = int(steps)
+        updates[f"{prefix}_step"] = int(steps)
 
     if sampler_name is not None:
-        updates[f"customscript/sampler.py/{tabname}/Sampling Method/value"] = sampler_name
+        updates[f"{prefix}_sampler"] = sampler_name
 
     if scheduler is not None:
-        updates[f"customscript/sampler.py/{tabname}/Schedule Type/value"] = scheduler
+        updates[f"{prefix}_scheduler"] = scheduler
 
     if cfg_scale is not None:
-        updates[f"{tabname}/CFG Scale/value"] = float(cfg_scale)
+        updates[f"{prefix}_cfg"] = float(cfg_scale)
+
+    if width is not None:
+        updates[f"{prefix}_width"] = int(width)
+
+    if height is not None:
+        updates[f"{prefix}_height"] = int(height)
+
+    if batch_size is not None:
+        updates[f"{prefix}_batch_size"] = int(batch_size)
+
+    if distilled_cfg_scale is not None:
+        updates[f"{prefix}_dcfg"] = float(distilled_cfg_scale)
+
+    if hr_steps is not None:
+        updates["t2i_hr_step"] = int(hr_steps)
+
+    if hr_cfg is not None:
+        updates["t2i_hr_cfg"] = float(hr_cfg)
+
+    if hr_distilled_cfg is not None:
+        updates["t2i_hr_dcfg"] = float(hr_distilled_cfg)
+
+    if resize_mode is not None:
+        updates["i2i_resize_mode"] = int(resize_mode)
 
     if updates:
-        ui_loadsave.update_ui_settings_file(ui_config_file, updates)
+        main_entry.remember_preset_ui_state(preset, **updates)
 
 
-def bind_last_generation_ui_values(tabname, *, steps, sampler_name, scheduler, cfg_scale):
+def bind_last_generation_ui_values(tabname, *, steps, sampler_name, scheduler, cfg_scale, width=None, height=None, batch_size=None, distilled_cfg_scale=None, hr_steps=None, hr_cfg=None, hr_distilled_cfg=None, resize_mode=None):
     event_kwargs = dict(queue=False, show_progress=False)
 
-    steps.release(
-        fn=lambda value: persist_last_generation_ui_values(tabname, steps=value),
-        inputs=[steps],
-        **event_kwargs,
-    )
-    steps.change(
-        fn=lambda value: persist_last_generation_ui_values(tabname, steps=value),
-        inputs=[steps],
-        **event_kwargs,
-    )
+    def current_preset():
+        return getattr(shared.opts, "forge_preset", None)
 
-    sampler_name.change(
-        fn=lambda value: persist_last_generation_ui_values(tabname, sampler_name=value),
-        inputs=[sampler_name],
-        **event_kwargs,
-    )
+    def bind_slider(control, field_name):
+        if control is None:
+            return
 
-    scheduler.change(
-        fn=lambda value: persist_last_generation_ui_values(tabname, scheduler=value),
-        inputs=[scheduler],
-        **event_kwargs,
-    )
+        control.release(
+            fn=lambda value: persist_last_generation_ui_values(tabname, current_preset(), **{field_name: value}),
+            inputs=[control],
+            **event_kwargs,
+        )
+        control.change(
+            fn=lambda value: persist_last_generation_ui_values(tabname, current_preset(), **{field_name: value}),
+            inputs=[control],
+            **event_kwargs,
+        )
 
-    cfg_scale.release(
-        fn=lambda value: persist_last_generation_ui_values(tabname, cfg_scale=value),
-        inputs=[cfg_scale],
-        **event_kwargs,
-    )
-    cfg_scale.change(
-        fn=lambda value: persist_last_generation_ui_values(tabname, cfg_scale=value),
-        inputs=[cfg_scale],
-        **event_kwargs,
-    )
+    def bind_dropdown(control, field_name):
+        if control is None:
+            return
+
+        control.change(
+            fn=lambda value: persist_last_generation_ui_values(tabname, current_preset(), **{field_name: value}),
+            inputs=[control],
+            **event_kwargs,
+        )
+
+    bind_slider(steps, "steps")
+    bind_dropdown(sampler_name, "sampler_name")
+    bind_dropdown(scheduler, "scheduler")
+    bind_slider(cfg_scale, "cfg_scale")
+    bind_slider(width, "width")
+    bind_slider(height, "height")
+    bind_slider(batch_size, "batch_size")
+    bind_slider(distilled_cfg_scale, "distilled_cfg_scale")
+    bind_slider(hr_steps, "hr_steps")
+    bind_slider(hr_cfg, "hr_cfg")
+    bind_slider(hr_distilled_cfg, "hr_distilled_cfg")
+    bind_dropdown(resize_mode, "resize_mode")
 
 
 def create_output_panel(tabname, outdir, toprow=None):
@@ -535,6 +575,13 @@ def create_ui():
                 sampler_name=txt2img_sampler_script.sampler_name,
                 scheduler=txt2img_sampler_script.scheduler,
                 cfg_scale=cfg_scale,
+                width=width,
+                height=height,
+                batch_size=batch_size,
+                distilled_cfg_scale=distilled_cfg_scale,
+                hr_steps=hr_second_pass_steps,
+                hr_cfg=hr_cfg,
+                hr_distilled_cfg=hr_distilled_cfg,
             )
 
             toprow.ui_styles.dropdown.change(fn=wrap_queued_call(update_token_counter), inputs=[toprow.prompt, steps, toprow.ui_styles.dropdown], outputs=[toprow.token_counter])
@@ -658,7 +705,7 @@ def create_ui():
                             )
 
                         with FormRow():
-                            resize_mode = gr.Radio(label="Resize mode", elem_id="resize_mode", choices=["Just resize", "Crop and resize", "Resize and fill", "Just resize (latent upscale)"], type="index", value="Crop and resize")
+                            resize_mode = gr.Radio(label="Resize mode", elem_id="resize_mode", choices=["Just resize", "Crop and resize", "Resize and fill", "Just resize (latent upscale)"], type="index", value="Just resize")
 
                     elif category == "dimensions":
                         with FormRow():
@@ -722,6 +769,11 @@ def create_ui():
                             cfg_scale = gr.Slider(minimum=1.0, maximum=24.0, step=0.5, label="CFG Scale", value=6.0, elem_id="img2img_cfg_scale", scale=4)
                             image_cfg_scale = gr.Slider(minimum=0, maximum=3.0, step=0.05, label="Image CFG Scale", value=1.5, elem_id="img2img_image_cfg_scale", visible=False)
                             cfg_scale.change(lambda v: gr.update(interactive=(v > 1.0)), inputs=[cfg_scale], outputs=[toprow.negative_prompt], queue=False, show_progress=False)
+                        with FormRow(elem_id="img2img_inference_options"):
+                            img2img_color_correction = create_setting_component("img2img_color_correction")
+                            use_karras_sigmas = create_setting_component("use_karras_sigmas")
+                            bind_inline_setting(img2img_color_correction, "img2img_color_correction")
+                            bind_inline_setting(use_karras_sigmas, "use_karras_sigmas")
                             scripts.scripts_img2img.setup_ui_for_section(category)
 
                     elif category == "accordions":
@@ -766,6 +818,12 @@ def create_ui():
                                     inpaint_full_res_bias_x = gr.Slider(label="Masked area bias X", minimum=-1024, maximum=1024, step=1, value=0, elem_id="img2img_inpaint_full_res_bias_x")
                                 with gr.Column():
                                     inpaint_full_res_bias_y = gr.Slider(label="Masked area bias Y", minimum=-1024, maximum=1024, step=1, value=0, elem_id="img2img_inpaint_full_res_bias_y")
+
+                            with FormRow(elem_id="img2img_inpaint_inference_options"):
+                                inpaint_color_correction = create_setting_component("inpaint_color_correction")
+                                overlay_inpaint = create_setting_component("overlay_inpaint")
+                                bind_inline_setting(inpaint_color_correction, "inpaint_color_correction")
+                                bind_inline_setting(overlay_inpaint, "overlay_inpaint")
 
                     if category not in {"accordions", "cfg"}:
                         scripts.scripts_img2img.setup_ui_for_section(category)
@@ -878,6 +936,11 @@ def create_ui():
                 sampler_name=img2img_sampler_script.sampler_name,
                 scheduler=img2img_sampler_script.scheduler,
                 cfg_scale=cfg_scale,
+                width=width,
+                height=height,
+                batch_size=batch_size,
+                distilled_cfg_scale=distilled_cfg_scale,
+                resize_mode=resize_mode,
             )
 
             toprow.ui_styles.dropdown.change(fn=wrap_queued_call(update_token_counter), inputs=[toprow.prompt, steps, toprow.ui_styles.dropdown], outputs=[toprow.token_counter])
@@ -885,7 +948,7 @@ def create_ui():
             toprow.token_button.click(fn=update_token_counter, inputs=[toprow.prompt, steps, toprow.ui_styles.dropdown], outputs=[toprow.token_counter])
             toprow.negative_token_button.click(fn=wrap_queued_call(update_negative_prompt_token_counter), inputs=[toprow.negative_prompt, steps, toprow.ui_styles.dropdown], outputs=[toprow.negative_token_counter])
 
-            img2img_paste_fields = [(toprow.prompt, "Prompt"), (toprow.negative_prompt, "Negative prompt"), (cfg_scale, "CFG scale"), (distilled_cfg_scale, "Distilled CFG Scale"), (image_cfg_scale, "Image CFG scale"), (width, "Size-1"), (height, "Size-2"), (batch_size, "Batch size"), (toprow.ui_styles.dropdown, lambda d: d["Styles array"] if isinstance(d.get("Styles array"), list) else gr.skip()), (denoising_strength, "Denoising strength"), (mask_blur, "Mask blur"), (inpainting_mask_invert, "Mask mode"), (inpainting_fill, "Masked content"), (inpaint_full_res, "Inpaint area"), (inpaint_full_res_padding, "Masked area padding"), (inpaint_full_res_bias_x, "Masked area bias X"), (inpaint_full_res_bias_y, "Masked area bias Y"), *scripts.scripts_img2img.infotext_fields]
+            img2img_paste_fields = [(toprow.prompt, "Prompt"), (toprow.negative_prompt, "Negative prompt"), (cfg_scale, "CFG scale"), (distilled_cfg_scale, "Distilled CFG Scale"), (image_cfg_scale, "Image CFG scale"), (width, "Size-1"), (height, "Size-2"), (batch_size, "Batch size"), (resize_mode, "Resize mode"), (toprow.ui_styles.dropdown, lambda d: d["Styles array"] if isinstance(d.get("Styles array"), list) else gr.skip()), (denoising_strength, "Denoising strength"), (mask_blur, "Mask blur"), (inpainting_mask_invert, "Mask mode"), (inpainting_fill, "Masked content"), (inpaint_full_res, "Inpaint area"), (inpaint_full_res_padding, "Masked area padding"), (inpaint_full_res_bias_x, "Masked area bias X"), (inpaint_full_res_bias_y, "Masked area bias Y"), *scripts.scripts_img2img.infotext_fields]
             parameters_copypaste.add_paste_fields("img2img", init_img.background, img2img_paste_fields, override_settings)
             parameters_copypaste.add_paste_fields("inpaint", init_img_with_mask.background, img2img_paste_fields, override_settings)
             parameters_copypaste.register_paste_params_button(

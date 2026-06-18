@@ -1,26 +1,31 @@
-import json
-
 import gradio as gr
 
 from modules import scripts, sd_samplers, sd_schedulers, shared
 from modules.infotext_utils import PasteField
 from modules.ui_components import FormRow
+from modules_forge import main_entry
 
 
 def _get_saved_sampler_ui_default(tabname, label, default_value):
-    key = f"customscript/sampler.py/{tabname}/{label}/value"
-    ui_config_file = getattr(shared.cmd_opts, "ui_config_file", None)
+    preset = getattr(shared.opts, "forge_preset", None)
+    prefix = "t2i" if tabname == "txt2img" else "i2i"
+    option_map = {
+        "Sampling Method": f"{preset}_{prefix}_sampler",
+        "Schedule Type": f"{preset}_{prefix}_scheduler",
+        "Sampling Steps": f"{preset}_{prefix}_step",
+    }
+    state_key_map = {
+        "Sampling Method": f"{prefix}_sampler",
+        "Schedule Type": f"{prefix}_scheduler",
+        "Sampling Steps": f"{prefix}_step",
+    }
+    option_key = option_map.get(label)
+    state_key = state_key_map.get(label)
 
-    if not ui_config_file:
+    if not option_key or not state_key:
         return default_value
 
-    try:
-        with open(ui_config_file, "r", encoding="utf8") as file:
-            ui_settings = json.load(file)
-    except Exception:
-        return default_value
-
-    return ui_settings.get(key, default_value)
+    return main_entry.get_preset_ui_state_value(preset, state_key, getattr(shared.opts, option_key, default_value))
 
 
 class ScriptSampler(scripts.ScriptBuiltinUI):

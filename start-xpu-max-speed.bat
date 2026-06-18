@@ -36,6 +36,7 @@ set "ZE_ENABLE_VALIDATION_LAYER=0"
 set "SYCL_PI_LEVEL_ZERO_USE_COPY_ENGINE=0"
 if not exist "ui-config-clean.json" echo {}> ui-config-clean.json
 set "COMMANDLINE_ARGS=--port 7863 --ui-config-file ui-config-clean.json --gpu-only --reserve-vram 1.0 --skip-install --skip-torch-cuda-test --gpu-device-id 0 --bf16-unet --bf16-vae --text-enc-device cpu --bf16-text-enc --skip-prepare-environment --no-hashing --use-pytorch-cross-attention --disable-xformers --disable-sage --disable-flash --model-ref C:\\Users\\Derek\\models"
-set "TORCH_COMMAND=pip install torch==2.11.0+xpu torchvision==0.26.0+xpu --index-url https://download.pytorch.org/whl/xpu"
+set "TORCH_COMMAND=pip install torch==2.12.0 torchvision==0.27.0 --index-url https://download.pytorch.org/whl/xpu"
 
 "%VENV_PYTHON%" launch.py
+pause

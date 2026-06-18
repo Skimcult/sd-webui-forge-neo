@@ -170,7 +170,7 @@ class ControlNetUnit:
     threshold_b: float = -1
     guidance_start: float = 0.0
     guidance_end: float = 1.0
-    pixel_perfect: bool = False
+    pixel_perfect: bool = True
     control_mode: ControlMode | int | str = ControlMode.BALANCED
     save_detected_map: bool = True
     _idx: int = -1
