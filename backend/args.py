@@ -108,59 +108,64 @@ class SageAttentionFuncs(enum.Enum):
     fp16_triton = "fp16_triton"
     fp16_cuda = "fp16_cuda"
     fp8_cuda = "fp8_cuda"
+    fp8_cuda_pp = "fp8_cuda++"
+    sageattn3 = "sageattn3"
 
 
-class Sage_quantization_backend(enum.Enum):
-    cuda = "cuda"
-    triton = "triton"
-
-
-class Sage_qk_quant_gran(enum.Enum):
-    per_warp = "per_warp"
-    per_thread = "per_thread"
-
-
-class Sage_pv_accum_dtype(enum.Enum):
-    fp16 = "fp16"
-    fp32 = "fp32"
-    fp16fp32 = "fp16+fp32"
-    fp32fp32 = "fp32+fp32"
-
-
-sage2 = parser.add_argument_group(description="SageAttention 2")
-sage2.add_argument("--sage2-function", type=SageAttentionFuncs, default=SageAttentionFuncs.auto, action=EnumAction)
-sage2.add_argument("--sage-quantization-backend", type=Sage_quantization_backend, default=Sage_quantization_backend.triton, action=EnumAction)
-sage2.add_argument("--sage-quant-gran", type=Sage_qk_quant_gran, default=Sage_qk_quant_gran.per_thread, action=EnumAction)
-sage2.add_argument("--sage-accum-dtype", type=Sage_pv_accum_dtype, default=Sage_pv_accum_dtype.fp32, action=EnumAction)
+sage = parser.add_argument_group(description="SageAttention")
+sage.add_argument("--sage-function", type=SageAttentionFuncs, default=SageAttentionFuncs.auto, action=EnumAction)
 
 
 args, _ = parser.parse_known_args()
 
-# TODO: Stop using this to hack every problem...
-dynamic_args = dict(
-    embedding_dir=None,
-    forge_unet_storage_dtype=None,
-    online_lora=False,
-    kontext=False,
-    edit=False,
-    nunchaku=False,
-    klein=False,
-    ref_latents=[],
-    concat_latent=None,
-    is_referencing=False,
-    ops=None,
-)
-"""
-Some parameters that are used throughout the Webui
-- embedding_dir: `str` - set in modules/sd_models/forge_model_reload
-- forge_unet_storage_dtype: `torch.dtype` - set in modules/sd_models/forge_model_reload
-- online_lora: `bool` - patch LoRAs on-the-fly
-- kontext: `bool` - Flux Kontext
-- edit: `bool` - Qwen-Image-Edit
-- nunchaku: `bool` - Nunchaku (SVDQ) Models
-- klein: `bool` - Flux.2 Klein
-- ref_latents: `list[torch.Tensor]` - Reference Latent(s) for Flux Kontext & Qwen-Image-Edit
-- concat_latent: `torch.Tensor` - Input Latent for Wan 2.2 I2V
-- is_referencing: `bool` - Appending Reference Latent(s) (by. ImageStitch)
-- ops: `str` - Operations for the Diffusion Model
-"""
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import os
+
+    import torch
+
+
+class _DynamicArgsMeta(type):
+    def get(cls, key, default=None):
+        return getattr(cls, key, default)
+
+    def __getitem__(cls, key, default=None):
+        return getattr(cls, key, default)
+
+    def __setitem__(cls, key, value):
+        setattr(cls, key, value)
+
+    def __contains__(cls, key):
+        return hasattr(cls, key)
+
+
+class dynamic_args(metaclass=_DynamicArgsMeta):
+    """Some parameters that are used throughout the Webui"""
+
+    embedding_dir: "os.PathLike" = None
+    """set in modules/sd_models/forge_model_reload"""
+    forge_unet_storage_dtype: "torch.dtype" = None
+    """set in modules/sd_models/forge_model_reload"""
+    online_lora: bool = False
+    """patch LoRAs on-the-fly"""
+    kontext: bool = False
+    """Flux Kontext"""
+    edit: bool = False
+    """Qwen-Image-Edit"""
+    nunchaku: bool = False
+    """Nunchaku (SVDQ) Models"""
+    klein: bool = False
+    """Flux.2 Klein"""
+    wan: bool = False
+    """Wan 2.2"""
+    ref_latents: list["torch.Tensor"] = []
+    """Reference Latent(s) for Flux Kontext / Qwen-Image-Edit / Flux.2 Klein"""
+    concat_latent: "torch.Tensor" = None
+    """Input Latent for Wan 2.2 I2V"""
+    is_referencing: bool = False
+    """Appending Reference Latent(s) (by. ImageStitch)"""
+    ops: str = None
+    """Operations for the Diffusion Model"""
+    last_extra_generation_params: dict[str, str] = {}
+    """Infotext captured during `get_learned_conditioning`"""

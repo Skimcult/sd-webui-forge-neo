@@ -1,6 +1,12 @@
+import math
+
+import cv2
+import numpy as np
+import torch
+
 from modules_forge.supported_preprocessor import PreprocessorClipVision, Preprocessor, PreprocessorParameter
 from modules_forge.shared import add_supported_preprocessor
-from modules_forge.utils import numpy_to_pytorch
+from modules_forge.utils import numpy_to_pytorch, resize_image_with_pad
 from modules_forge.shared import add_supported_control_model
 from modules_forge.supported_controlnet import ControlModelPatcher
 from lib_ipadapter.IPAdapterPlus import IPAdapterApply, InsightFaceLoader
@@ -65,6 +71,41 @@ class PreprocessorInsightFaceForInstantID(Preprocessor):
         self.show_control_mode = False
         self.sorting_priority = 10
         self.cached_insightface = None
+        self.latest_face_embedding = None
+
+    @staticmethod
+    def draw_keypoints(img, keypoints, color_list=((255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255))):
+        stick_width = 4
+        limb_sequence = np.array([[0, 2], [1, 2], [3, 2], [4, 2]])
+        keypoints = np.array(keypoints)
+
+        height, width, _ = img.shape
+        output_image = np.zeros((height, width, 3), dtype=np.uint8)
+
+        for index in limb_sequence:
+            color = color_list[index[0]]
+            x_coords = keypoints[index][:, 0]
+            y_coords = keypoints[index][:, 1]
+            length = ((x_coords[0] - x_coords[1]) ** 2 + (y_coords[0] - y_coords[1]) ** 2) ** 0.5
+            angle = math.degrees(math.atan2(y_coords[0] - y_coords[1], x_coords[0] - x_coords[1]))
+            polygon = cv2.ellipse2Poly(
+                (int(np.mean(x_coords)), int(np.mean(y_coords))),
+                (int(length / 2), stick_width),
+                int(angle),
+                0,
+                360,
+                1,
+            )
+            output_image = cv2.fillConvexPoly(output_image.copy(), polygon, color)
+
+        output_image = (output_image * 0.6).astype(np.uint8)
+
+        for keypoint_index, keypoint in enumerate(keypoints):
+            color = color_list[keypoint_index]
+            x_coord, y_coord = keypoint
+            output_image = cv2.circle(output_image.copy(), (int(x_coord), int(y_coord)), 10, color, -1)
+
+        return output_image
 
     def load_insightface(self):
         if self.cached_insightface is None:
@@ -72,17 +113,29 @@ class PreprocessorInsightFaceForInstantID(Preprocessor):
         return self.cached_insightface
 
     def __call__(self, input_image, resolution, slider_1=None, slider_2=None, slider_3=None, **kwargs):
-        cond = dict(
-            clip_vision=None,
-            insightface=self.load_insightface(),
-            image=numpy_to_pytorch(input_image),
-            weight_type="original",
-            noise=0.0,
-            embeds=None,
-            unfold_batch=False,
-            instant_id=True
+        insightface = self.load_insightface()
+        resized_image, remove_pad = resize_image_with_pad(input_image, resolution)
+        face_info = insightface.get(resized_image)
+
+        if not face_info:
+            raise Exception("InsightFace: No face found in image.")
+
+        if len(face_info) > 1:
+            print("InsightFace: More than one face is detected in the image. Only the biggest one will be used.")
+
+        primary_face = max(
+            face_info,
+            key=lambda face: (face['bbox'][2] - face['bbox'][0]) * (face['bbox'][3] - face['bbox'][1]),
         )
-        return cond
+
+        self.latest_face_embedding = torch.from_numpy(primary_face['embedding']).float().unsqueeze(0)
+
+        control_image = remove_pad(self.draw_keypoints(resized_image, primary_face['kps']))
+
+        return {
+            "image": numpy_to_pytorch(control_image).movedim(-1, 1),
+            "y": self.latest_face_embedding,
+        }
 
 
 add_supported_preprocessor(PreprocessorClipVisionForIPAdapter(

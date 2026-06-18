@@ -29,6 +29,19 @@ def zero_cat(a, b, dim):
     return torch.cat([a, b], dim=dim)
 
 
+def safe_batch_select(x, indices):
+    if isinstance(indices, torch.Tensor):
+        idx = indices.to(device=x.device, dtype=torch.long)
+    else:
+        idx = torch.tensor(indices, device=x.device, dtype=torch.long)
+
+    if idx.numel() == 0:
+        return x[:0]
+
+    # index_select is generally more stable on XPU than advanced indexing.
+    return torch.index_select(x, 0, idx)
+
+
 class PreprocessorReference(Preprocessor):
     def __init__(self, name, use_attn=True, use_adain=True, priority=0):
         super().__init__()
@@ -110,13 +123,19 @@ class PreprocessorReference(Preprocessor):
                 self.recorded_h[location] = torch.std_mean(h, dim=(2, 3), keepdim=True, correction=0)
                 return h
             else:
+                if location not in self.recorded_h:
+                    return h
+
                 cond_indices = transformer_options['cond_indices']
                 uncond_indices = transformer_options['uncond_indices']
                 cond_or_uncond = transformer_options['cond_or_uncond']
                 r_std, r_mean = self.recorded_h[location]
 
-                h_c = h[cond_indices]
-                h_uc = h[uncond_indices]
+                try:
+                    h_c = safe_batch_select(h, cond_indices)
+                    h_uc = safe_batch_select(h, uncond_indices)
+                except RuntimeError:
+                    return h
 
                 o_c = adain(h_c, r_std, r_mean)
                 o_uc_strong = h_uc
@@ -154,18 +173,24 @@ class PreprocessorReference(Preprocessor):
                 self.recorded_attn1[location] = (k, v)
                 return sdp(q, k, v, transformer_options)
             else:
+                if location not in self.recorded_attn1:
+                    return sdp(q, k, v, transformer_options)
+
                 cond_indices = transformer_options['cond_indices']
                 uncond_indices = transformer_options['uncond_indices']
                 cond_or_uncond = transformer_options['cond_or_uncond']
 
-                q_c = q[cond_indices]
-                q_uc = q[uncond_indices]
+                try:
+                    q_c = safe_batch_select(q, cond_indices)
+                    q_uc = safe_batch_select(q, uncond_indices)
 
-                k_c = k[cond_indices]
-                k_uc = k[uncond_indices]
+                    k_c = safe_batch_select(k, cond_indices)
+                    k_uc = safe_batch_select(k, uncond_indices)
 
-                v_c = v[cond_indices]
-                v_uc = v[uncond_indices]
+                    v_c = safe_batch_select(v, cond_indices)
+                    v_uc = safe_batch_select(v, uncond_indices)
+                except RuntimeError:
+                    return sdp(q, k, v, transformer_options)
 
                 k_r, v_r = self.recorded_attn1[location]
 

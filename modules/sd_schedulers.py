@@ -3,10 +3,16 @@ from math import atan, pi
 from typing import Callable
 
 import k_diffusion
+import k_diffusion.sampling
 import numpy as np
 import torch
 from modules import shared
 from scipy import stats
+
+try:
+    from modules_forge.packages.k_diffusion import sampling as forge_k_diffusion_sampling
+except ImportError:
+    forge_k_diffusion_sampling = None
 
 
 def to_d(x: torch.Tensor, sigma: float, denoised: torch.Tensor):
@@ -15,6 +21,18 @@ def to_d(x: torch.Tensor, sigma: float, denoised: torch.Tensor):
 
 
 k_diffusion.sampling.to_d = to_d
+if forge_k_diffusion_sampling is not None:
+    forge_k_diffusion_sampling.to_d = to_d
+
+
+def get_k_diffusion_sigma_scheduler(funcname):
+    if hasattr(k_diffusion.sampling, funcname):
+        return getattr(k_diffusion.sampling, funcname)
+
+    if forge_k_diffusion_sampling is not None and hasattr(forge_k_diffusion_sampling, funcname):
+        return getattr(forge_k_diffusion_sampling, funcname)
+
+    raise AttributeError(f"k-diffusion sigma scheduler function '{funcname}' not found")
 
 
 @dataclasses.dataclass
@@ -200,11 +218,36 @@ def bong_tangent_scheduler(n, sigma_min, sigma_max, device, *, start=1.0, middle
     return tan_sigmas.to(device)
 
 
+def flow_match_euler_discrete_scheduler(n, sigma_min, sigma_max, inner_model, device):
+    from diffusers.schedulers.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
+
+    unet = inner_model.inner_model.forge_objects.unet
+
+    config = {
+        "num_train_timesteps": 1000,
+        "shift": getattr(unet.model.predictor, "shift", 1.0),
+        "use_dynamic_shifting": shared.opts.use_dynamic_shifting,
+        "invert_sigmas": shared.opts.invert_sigmas,
+        "shift_terminal": None,
+        "use_karras_sigmas": shared.opts.use_karras_sigmas,
+        "use_exponential_sigmas": shared.opts.use_exponential_sigmas,
+        "use_beta_sigmas": shared.opts.use_beta_sigmas,
+        "time_shift_type": "exponential",
+        "stochastic_sampling": shared.opts.stochastic_sampling,
+    }
+
+    scheduler = FlowMatchEulerDiscreteScheduler.from_config(config)
+    scheduler.set_timesteps(n, device=device, mu=0.0)
+    sigmas = scheduler.sigmas
+
+    return torch.FloatTensor(sigmas).to(device)
+
+
 schedulers = [
     Scheduler("automatic", "Automatic", None),
-    Scheduler("karras", "Karras", k_diffusion.sampling.get_sigmas_karras, default_rho=7.0),
-    Scheduler("exponential", "Exponential", k_diffusion.sampling.get_sigmas_exponential),
-    Scheduler("polyexponential", "Polyexponential", k_diffusion.sampling.get_sigmas_polyexponential, default_rho=1.0),
+    Scheduler("karras", "Karras", get_k_diffusion_sigma_scheduler("get_sigmas_karras"), default_rho=7.0),
+    Scheduler("exponential", "Exponential", get_k_diffusion_sigma_scheduler("get_sigmas_exponential")),
+    Scheduler("polyexponential", "Polyexponential", get_k_diffusion_sigma_scheduler("get_sigmas_polyexponential"), default_rho=1.0),
     Scheduler("normal", "Normal", normal_scheduler, need_inner_model=True),
     Scheduler("simple", "Simple", simple_scheduler, need_inner_model=True),
     Scheduler("uniform", "Uniform", uniform, need_inner_model=True),
@@ -216,6 +259,7 @@ schedulers = [
     Scheduler("beta", "Beta", beta_scheduler, need_inner_model=True),
     Scheduler("turbo", "Turbo", turbo_scheduler, need_inner_model=True),
     Scheduler("bong_tangent", "Bong Tangent", bong_tangent_scheduler),
+    Scheduler("flow_match", "FlowMatchEulerDiscrete", flow_match_euler_discrete_scheduler, need_inner_model=True),
 ]
 
 schedulers_map = {**{x.name: x for x in schedulers}, **{x.label: x for x in schedulers}}

@@ -1,35 +1,46 @@
-"""
-Compatibility shim for extensions expecting AUTOMATIC1111's modules.sd_hijack.
-Provides model_hijack.get_prompt_lengths used by sd-webui-prompt-all-in-one.
-"""
-
-from typing import Tuple
+import math
 
 
-def _get_prompt_lengths(prompt: str, cond_stage_model=None) -> Tuple[int, int]:
-    try:
-        # Prefer the model-provided helper if available (Forge engines implement this).
-        if cond_stage_model and hasattr(cond_stage_model, "get_prompt_lengths_on_ui"):
-            return cond_stage_model.get_prompt_lengths_on_ui(prompt)
+class _EmbeddingDbCompat:
+    def add_embedding_dir(self, path):
+        return None
 
-        from modules import sd_models  # type: ignore
+    def load_textual_inversion_embeddings(self, force_reload=True, sync_with_sd_model=False):
+        return None
 
-        sd_model = getattr(sd_models, "model_data", None)
-        sd_model = getattr(sd_model, "sd_model", None)
-        fn = getattr(sd_model, "get_prompt_lengths_on_ui", None)
-        if fn:
-            return fn(prompt)
-    except Exception:
-        pass
-
-    # Fallback: unknown length
-    return 0, 0
+    def register_embedding_by_name(self, embedding, sd_model, name):
+        return None
 
 
-class _ModelHijack:
-    @staticmethod
-    def get_prompt_lengths(prompt: str, cond_stage_model=None) -> Tuple[int, int]:
-        return _get_prompt_lengths(prompt, cond_stage_model)
+class ModelHijackCompat:
+    """
+    Minimal compatibility shim for legacy extensions that import:
+      from modules.sd_hijack import model_hijack
+    """
+
+    def __init__(self):
+        self.embedding_db = _EmbeddingDbCompat()
+
+    def get_prompt_lengths(self, prompt, cond_stage_model=None):
+        # Legacy extensions may pass cond_stage_model; current core API does not require it.
+        try:
+            from modules import sd_models
+            return sd_models.model_data.sd_model.get_prompt_lengths_on_ui(prompt)
+        except Exception:
+            # Fallback to a simple token estimate if model API is not ready yet.
+            r = len(
+                prompt.strip("!,. ")
+                .replace(" ", ",")
+                .replace(".", ",")
+                .replace("!", ",")
+                .replace(",,", ",")
+                .replace(",,", ",")
+                .replace(",,", ",")
+                .replace(",,", ",")
+                .split(",")
+            )
+            max_len = math.ceil(max(r, 1) / 75) * 75
+            return r, max_len
 
 
-model_hijack = _ModelHijack()
+model_hijack = ModelHijackCompat()

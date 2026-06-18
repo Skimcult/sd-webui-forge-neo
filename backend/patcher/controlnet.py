@@ -159,6 +159,15 @@ def broadcast_image_to(tensor, target_batch_size, batched_number):
         return torch.cat([tensor] * batched_number, dim=0)
 
 
+def broadcast_tensor_to(tensor, target_batch_size):
+    current_batch_size = tensor.shape[0]
+    if current_batch_size == target_batch_size:
+        return tensor
+    if current_batch_size == 1:
+        return tensor.repeat(target_batch_size, *([1] * (tensor.ndim - 1)))
+    return tensor
+
+
 def get_at(array, index, default=None):
     return array[index] if 0 <= index < len(array) else default
 
@@ -177,9 +186,15 @@ class ControlBase:
             device = memory_management.get_torch_device()
         self.device = device
         self.previous_controlnet = None
+        self.extra_cond = {}
 
     def set_cond_hint(self, cond_hint, strength=1.0, timestep_percent_range=(0.0, 1.0)):
-        self.cond_hint_original = cond_hint
+        if isinstance(cond_hint, dict):
+            self.cond_hint_original = cond_hint.get("image", None)
+            self.extra_cond = {key: value for key, value in cond_hint.items() if key != "image"}
+        else:
+            self.cond_hint_original = cond_hint
+            self.extra_cond = {}
         self.strength = strength
         self.timestep_percent_range = timestep_percent_range
         return self
@@ -199,6 +214,7 @@ class ControlBase:
         if self.cond_hint is not None:
             del self.cond_hint
             self.cond_hint = None
+        self.extra_cond = {}
         self.timestep_range = None
 
     def get_models(self):
@@ -212,6 +228,7 @@ class ControlBase:
         c.strength = self.strength
         c.timestep_percent_range = self.timestep_percent_range
         c.global_average_pooling = self.global_average_pooling
+        c.extra_cond = self.extra_cond.copy()
 
     def inference_memory_requirements(self, dtype):
         if self.previous_controlnet is not None:
@@ -302,6 +319,10 @@ class ControlNet(ControlBase):
             dtype = self.manual_cast_dtype
 
         output_dtype = x_noisy.dtype
+        if self.cond_hint_original is None:
+            if control_prev is not None:
+                return control_prev
+            return None
         if self.cond_hint is None or x_noisy.shape[2] * 8 != self.cond_hint.shape[2] or x_noisy.shape[3] * 8 != self.cond_hint.shape[3]:
             if self.cond_hint is not None:
                 del self.cond_hint
@@ -312,7 +333,11 @@ class ControlNet(ControlBase):
 
         context = cond["c_crossattn"]
         y = cond.get("y", None)
+        if y is None:
+            y = self.extra_cond.get("y", None)
         if y is not None:
+            if y.shape[0] != x_noisy.shape[0]:
+                y = broadcast_tensor_to(y, x_noisy.shape[0])
             y = y.to(dtype)
         timestep = self.model_sampling_current.timestep(t)
         x_noisy = self.model_sampling_current.calculate_input(t, x_noisy)
@@ -482,6 +507,11 @@ class T2IAdapter(ControlBase):
                     return control_prev
                 else:
                     return None
+
+        if self.cond_hint_original is None:
+            if control_prev is not None:
+                return control_prev
+            return None
 
         if self.cond_hint is None or x_noisy.shape[2] * 8 != self.cond_hint.shape[2] or x_noisy.shape[3] * 8 != self.cond_hint.shape[3]:
             if self.cond_hint is not None:
